@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1e293b">
+  <title>Flipkart Returns Tracker & Scanner</title>
+  <link rel="stylesheet" href="/styles.css">
+  <!-- Offline QR generator for phone connection -->
+  <script src="/vendor/qrcode.js"></script>
+  <!-- SheetJS CDN with fallback -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <div id="app" class="app-container">
+    <!-- Top Navigation Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="brand-logo">
+          <span class="logo-icon">📦</span>
+          <span class="logo-text">Flipkart<span class="logo-accent">Returns</span></span>
+        </div>
+        <span class="badge live-badge" id="connection-status">
+          <span class="status-dot"></span> Live
+        </span>
+      </div>
+
+      <div class="header-actions">
+        <button id="btn-sound-toggle" class="btn-icon" title="Toggle Sound Feedback">
+          <span id="sound-icon">🔊</span>
+        </button>
+        <button id="btn-mobile-connect" class="btn-primary-sm">
+          <span>📱</span> Connect Phone
+        </button>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs" role="tablist">
+      <button class="nav-tab active" data-tab="tab-scanner">
+        <span class="tab-icon">📷</span>
+        <span class="tab-label">Scanner</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-missing">
+        <span class="tab-icon">⚠️</span>
+        <span class="tab-label">Missing Returns</span>
+        <span class="tab-counter badge-danger" id="nav-missing-count">0</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-upload">
+        <span class="tab-icon">📁</span>
+        <span class="tab-label">Upload Excel</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-scans">
+        <span class="tab-icon">📋</span>
+        <span class="tab-label">Scans</span>
+        <span class="tab-counter badge-neutral" id="nav-scans-count">0</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-dashboard">
+        <span class="tab-icon">📊</span>
+        <span class="tab-label">Overview</span>
+      </button>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+
+      <!-- TAB 1: SCANNER VIEW -->
+      <section id="tab-scanner" class="tab-view active">
+        <!-- Live Camera Viewport -->
+        <div class="scanner-card">
+          <div class="camera-viewport-container" id="camera-container">
+            <video id="camera-video" playsinline muted autoplay></video>
+            <canvas id="camera-canvas" class="hidden"></canvas>
+            
+            <!-- Scanning Reticle Overlay -->
+            <div class="scanner-overlay">
+              <div class="scanner-laser" id="scanner-laser"></div>
+              <div class="reticle-box">
+                <div class="corner top-left"></div>
+                <div class="corner top-right"></div>
+                <div class="corner bottom-left"></div>
+                <div class="corner bottom-right"></div>
+              </div>
+              <p class="reticle-hint">Point camera at QR code or Barcode</p>
+            </div>
+
+            <!-- Viewport Overlay Status (e.g. Camera Off / Error) -->
+            <div id="camera-placeholder" class="camera-placeholder">
+              <div class="placeholder-content">
+                <span class="camera-icon-large">📷</span>
+                <p id="camera-status-text">Camera ready</p>
+                <button id="btn-start-camera" class="btn-primary">
+                  <span>▶️</span> Start Camera
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Camera Controls Toolbar -->
+          <div class="camera-controls">
+            <button id="btn-toggle-camera" class="btn-secondary" title="Start/Stop Camera">
+              <span id="toggle-camera-icon">⏹️</span> Stop Camera
+            </button>
+            <button id="btn-switch-camera" class="btn-secondary" title="Switch Front/Back Camera">
+              <span>🔄</span> Flip
+            </button>
+            <button id="btn-torch" class="btn-secondary hidden" title="Toggle Flashlight">
+              <span>💡</span> Torch
+            </button>
+            <label class="btn-secondary file-capture-btn" title="Snap photo using phone camera">
+              <span>📸</span> Take Photo
+              <input type="file" id="file-photo-input" accept="image/*" capture="environment" class="hidden">
+            </label>
+          </div>
+
+          <!-- Manual Tracking ID Input (Keyboard / Handheld Barcode Gun) -->
+          <div class="manual-input-bar">
+            <div class="input-wrapper">
+              <span class="input-prefix">🏷️</span>
+              <input type="text" id="manual-tracking-input" placeholder="Type or scan Tracking ID / AWB..." autocomplete="off" autocorrect="off" autocapitalize="characters">
+              <button id="btn-clear-input" class="btn-icon hidden" title="Clear text">✕</button>
+            </div>
+            <button id="btn-manual-submit" class="btn-accent">
+              Record
+            </button>
+          </div>
+        </div>
+
+        <!-- Scan Result Banner (Dynamic feedback for the 4 scenarios) -->
+        <div id="scan-result-card" class="result-card hidden">
+          <div class="result-header">
+            <span class="result-icon" id="result-icon">✅</span>
+            <div class="result-titles">
+              <div class="result-badge" id="result-badge">STATUS</div>
+              <h3 class="result-message" id="result-message">Message text here</h3>
+            </div>
+          </div>
+
+          <!-- Flipkart DB Details (When available) -->
+          <div id="result-details" class="result-details-grid hidden">
+            <div class="detail-item">
+              <span class="detail-label">Tracking ID</span>
+              <span class="detail-value highlight" id="res-tracking-id">-</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Order ID</span>
+              <span class="detail-value" id="res-order-id">-</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">SKU / Item</span>
+              <span class="detail-value" id="res-sku">-</span>
+            </div>
+            <div class="detail-item full-width">
+              <span class="detail-label">Product Name</span>
+              <span class="detail-value" id="res-product">-</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Return Reason</span>
+              <span class="detail-value alert-text" id="res-reason">-</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Recorded At</span>
+              <span class="detail-value" id="res-timestamp">-</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent Scans Live Stream -->
+        <div class="section-card">
+          <div class="card-header">
+            <h4 class="card-title">Recent Scans (This Session)</h4>
+            <span class="card-subtitle" id="recent-scans-summary">0 scans</span>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Tracking ID</th>
+                  <th>Status</th>
+                  <th>Order ID</th>
+                  <th>Product / Details</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody id="recent-scans-tbody">
+                <tr class="empty-row">
+                  <td colspan="5">No scans yet. Scan a package barcode or QR code above.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: MISSING RETURNS (CORE FEATURE) -->
+      <section id="tab-missing" class="tab-view">
+        <div class="hero-alert-card">
+          <div class="hero-alert-icon">⚠️</div>
+          <div class="hero-alert-content">
+            <h2 class="hero-title"><span id="missing-headline-count">0</span> Returns Pending / Missing</h2>
+            <p class="hero-description">
+              These items were uploaded in your Flipkart return manifest (Flipkart Return Records) but have <strong>not been scanned or received</strong> yet in Returns.
+            </p>
+          </div>
+          <div class="hero-alert-actions">
+            <button id="btn-export-missing-csv" class="btn-primary">
+              <span>📥</span> Export Missing (.CSV)
+            </button>
+          </div>
+        </div>
+
+        <!-- Filter and Search Bar -->
+        <div class="toolbar-card">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="missing-search-input" placeholder="Search missing by Tracking ID, Order ID, SKU, Product...">
+          </div>
+          <div class="toolbar-actions">
+            <button id="btn-refresh-missing" class="btn-secondary" title="Refresh">
+              <span>🔄</span> Refresh
+            </button>
+          </div>
+        </div>
+
+        <!-- Missing Items Table -->
+        <div class="section-card">
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Tracking ID</th>
+                  <th>Order ID</th>
+                  <th>SKU</th>
+                  <th>Product Name</th>
+                  <th>Return Reason</th>
+                  <th>Return Date</th>
+                  <th>Days Pending</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="missing-table-tbody">
+                <tr class="loading-row">
+                  <td colspan="8">Loading pending returns...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Pagination -->
+          <div class="pagination-footer">
+            <span class="pagination-info" id="missing-pagination-info">Showing 0 of 0</span>
+            <div class="pagination-btns">
+              <button id="btn-missing-prev" class="btn-secondary-sm" disabled>Previous</button>
+              <button id="btn-missing-next" class="btn-secondary-sm" disabled>Next</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: UPLOAD EXCEL FILE -->
+      <section id="tab-upload" class="tab-view">
+        <div class="section-card">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title">Upload Flipkart Returns File</h3>
+              <p class="card-subtitle">Upload your Flipkart seller return manifest (.xlsx, .xls, or .csv). Existing tracking IDs are <strong>ignored silently</strong>, and new entries are appended into Flipkart Return Records.</p>
+            </div>
+            <div class="header-buttons">
+              <button id="btn-load-sample" class="btn-secondary-sm">
+                <span>⚡</span> Load Sample Flipkart Data
+              </button>
+              <a href="/data/sample_flipkart_returns.csv" download="sample_flipkart_returns.csv" class="btn-secondary-sm">
+                <span>📄</span> Download Sample CSV
+              </a>
+            </div>
+          </div>
+
+          <!-- Drag and Drop Zone -->
+          <div class="dropzone" id="file-dropzone">
+            <input type="file" id="excel-file-input" accept=".xlsx, .xls, .csv" class="hidden">
+            <div class="dropzone-content">
+              <span class="dropzone-icon">📊</span>
+              <h4>Drag & drop Flipkart returns file here</h4>
+              <p>Supports .xlsx, .xls, and .csv formats</p>
+              <button type="button" class="btn-primary" onclick="document.getElementById('excel-file-input').click()">
+                <span>📂</span> Browse File
+              </button>
+            </div>
+          </div>
+
+          <!-- Upload Status / Result Banner -->
+          <div id="upload-status-card" class="upload-alert hidden">
+            <span id="upload-status-icon">✅</span>
+            <div id="upload-status-text">Ready</div>
+          </div>
+
+          <!-- Preview of Detected Columns and Data -->
+          <div id="upload-preview-container" class="preview-container hidden">
+            <div class="preview-header">
+              <h4>File Preview (<span id="preview-row-count">0</span> rows detected)</h4>
+              <button id="btn-confirm-import" class="btn-accent">
+                <span>💾</span> Confirm & Save into Database
+              </button>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table preview-table" id="preview-table">
+                <thead id="preview-table-thead"></thead>
+                <tbody id="preview-table-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: SCANNED RECORDS (RETURNS) -->
+      <section id="tab-scans" class="tab-view">
+        <div class="toolbar-card">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="scans-search-input" placeholder="Search scans by Tracking ID, Order ID, Product...">
+          </div>
+          <div class="filter-group">
+            <button class="filter-chip active" data-filter="all">All Scans</button>
+            <button class="filter-chip" data-filter="1">Matched in Flipkart Return Records</button>
+            <button class="filter-chip" data-filter="0">Not in Flipkart Return Records</button>
+          </div>
+          <button id="btn-refresh-scans" class="btn-secondary" title="Refresh">
+            <span>🔄</span> Refresh
+          </button>
+        </div>
+
+        <div class="section-card">
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Tracking ID</th>
+                  <th>Match Status</th>
+                  <th>Scanned Date & Time</th>
+                  <th>Order ID</th>
+                  <th>Product</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="scans-table-tbody">
+                <tr class="loading-row">
+                  <td colspan="7">Loading scan records...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Pagination -->
+          <div class="pagination-footer">
+            <span class="pagination-info" id="scans-pagination-info">Showing 0 of 0</span>
+            <div class="pagination-btns">
+              <button id="btn-scans-prev" class="btn-secondary-sm" disabled>Previous</button>
+              <button id="btn-scans-next" class="btn-secondary-sm" disabled>Next</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: OVERVIEW & DASHBOARD -->
+      <section id="tab-dashboard" class="tab-view">
+        <!-- KPI Stat Cards -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon icon-blue">📋</div>
+            <div class="stat-content">
+              <span class="stat-label">Total Uploaded Returns</span>
+              <h2 class="stat-value" id="kpi-uploaded">0</h2>
+              <span class="stat-hint">In Flipkart Return Records (Excel)</span>
+            </div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-icon icon-purple">📷</div>
+            <div class="stat-content">
+              <span class="stat-label">Total Packages Scanned</span>
+              <h2 class="stat-value" id="kpi-scanned">0</h2>
+              <span class="stat-hint">In Returns (Scans)</span>
+            </div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-icon icon-green">✅</div>
+            <div class="stat-content">
+              <span class="stat-label">Verified & Matched</span>
+              <h2 class="stat-value text-green" id="kpi-matched">0</h2>
+              <span class="stat-hint">Received Flipkart returns</span>
+            </div>
+          </div>
+
+          <div class="stat-card stat-alert">
+            <div class="stat-icon icon-red">⚠️</div>
+            <div class="stat-content">
+              <span class="stat-label">Pending / Missing Returns</span>
+              <h2 class="stat-value text-red" id="kpi-missing">0</h2>
+              <span class="stat-hint">Expected but NOT scanned</span>
+            </div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-icon icon-orange">❓</div>
+            <div class="stat-content">
+              <span class="stat-label">Unlisted / Extra Scans</span>
+              <h2 class="stat-value text-orange" id="kpi-unmatched">0</h2>
+              <span class="stat-hint">Scanned but not in Flipkart Return Records</span>
+            </div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-icon icon-teal">🎯</div>
+            <div class="stat-content">
+              <span class="stat-label">Return Completion Rate</span>
+              <h2 class="stat-value" id="kpi-completion">0%</h2>
+              <span class="stat-hint">Expected items received</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Progress Bar Card -->
+        <div class="section-card">
+          <div class="card-header">
+            <h4 class="card-title">Returns Reconciliation Progress</h4>
+            <span id="progress-text" class="card-subtitle">0 of 0 returns verified</span>
+          </div>
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" id="progress-bar-fill" style="width: 0%"></div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Mobile Connect Modal -->
+    <div id="mobile-modal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 class="modal-title">📱 Connect Mobile Camera Scanner</h3>
+          <button id="btn-close-modal" class="btn-icon">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-desc">Scan this QR code with your mobile phone camera to open this scanner directly on your phone:</p>
+          <div class="qr-code-box" id="mobile-qr-container">
+            <!-- QR Code SVG injected by JS -->
+          </div>
+          <div class="mobile-url-box">
+            <span class="label">Or open in phone browser:</span>
+            <div class="url-copy-row">
+              <input type="text" id="mobile-url-text" readonly value="http://localhost:3000">
+              <button id="btn-copy-url" class="btn-secondary-sm">Copy</button>
+            </div>
+          </div>
+          <div class="modal-tips">
+            <strong>💡 Quick Tips:</strong>
+            <ul>
+              <li>Ensure your phone is connected to the same Wi-Fi network as this PC.</li>
+              <li>You can use the <strong>"📸 Take Photo"</strong> button on your phone to scan labels without needing camera permissions!</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Main Application Logic -->
+  <script src="/app.js"></script>
+</body>
+</html>
