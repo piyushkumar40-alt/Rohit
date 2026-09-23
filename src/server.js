@@ -1,6 +1,8 @@
 // src/server.js
-// High-performance HTTP server for Flipkart Returns Tracker using pure Node.js
+// High-performance HTTP & HTTPS server for Flipkart Returns Tracker using pure Node.js
 const http = require('node:http');
+const https = require('node:https');
+const { execSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -9,7 +11,23 @@ const url = require('node:url');
 const db = require('./db');
 
 const PORT = process.env.PORT || 3000;
+const HTTPS_PORT = process.env.HTTPS_PORT || 3443;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const PFX_PATH = path.join(__dirname, '..', 'cert.pfx');
+const PFX_PASSWORD = 'flipkart';
+
+// Ensure SSL cert.pfx exists for HTTPS mobile camera access
+function ensureSslCert() {
+  if (fs.existsSync(PFX_PATH)) return true;
+  try {
+    const cmd = `powershell -Command "$cert = New-SelfSignedCertificate -DnsName 'localhost', '192.168.29.194' -CertStoreLocation 'cert:\\CurrentUser\\My' -NotAfter (Get-Date).AddYears(5); $pwd = ConvertTo-SecureString -String '${PFX_PASSWORD}' -Force -AsPlainText; Export-PfxCertificate -Cert $cert -FilePath '${PFX_PATH}' -Password $pwd"`;
+    execSync(cmd, { stdio: 'ignore' });
+    return fs.existsSync(PFX_PATH);
+  } catch (e) {
+    console.warn('Could not auto-generate SSL certificate:', e.message);
+    return false;
+  }
+}
 
 // Helper to get local IPv4 addresses
 function getLocalIps() {
@@ -95,7 +113,7 @@ const MIME_TYPES = {
 };
 
 // Request handler
-const server = http.createServer(async (req, res) => {
+const requestHandler = async (req, res) => {
   // CORS Preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
@@ -219,12 +237,17 @@ const server = http.createServer(async (req, res) => {
       }
 
       // 9. Network IP & Pairing Info
+      // 9. Network IP & Pairing Info
       if (pathname === '/api/network-info' && req.method === 'GET') {
         const ips = getLocalIps();
+        const hasHttps = fs.existsSync(PFX_PATH);
         return sendJson(res, 200, {
           port: PORT,
+          httpsPort: HTTPS_PORT,
+          hasHttps,
           ips,
-          mobileUrls: ips.map(ip => `http://${ip}:${PORT}`)
+          mobileUrls: ips.map(ip => `http://${ip}:${PORT}`),
+          mobileHttpsUrls: ips.map(ip => `https://${ip}:${HTTPS_PORT}`)
         });
       }
 
@@ -333,17 +356,44 @@ const server = http.createServer(async (req, res) => {
     console.error('Server Error:', err);
     return sendError(res, 500, err.message || 'Internal Server Error');
   }
-});
+};
 
-server.listen(PORT, '0.0.0.0', () => {
+// HTTP Server (Port 3000)
+const httpServer = http.createServer(requestHandler);
+
+httpServer.listen(PORT, '0.0.0.0', () => {
   const ips = getLocalIps();
   console.log(`\n======================================================`);
   console.log(` Flipkart Returns Tracker is running!`);
-  console.log(` Local:   http://localhost:${PORT}`);
+  console.log(` HTTP (Local):   http://localhost:${PORT}`);
   ips.forEach(ip => {
-    console.log(` Mobile:  http://${ip}:${PORT}`);
+    console.log(` HTTP (Mobile):  http://${ip}:${PORT}`);
   });
-  console.log(`======================================================\n`);
+
+  // HTTPS Server (Port 3443 for Mobile Camera streaming)
+  if (ensureSslCert()) {
+    try {
+      const pfxData = fs.readFileSync(PFX_PATH);
+      const httpsServer = https.createServer({
+        pfx: pfxData,
+        passphrase: PFX_PASSWORD
+      }, requestHandler);
+
+      httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => {
+        console.log(`------------------------------------------------------`);
+        console.log(` HTTPS for Mobile Camera Streaming:`);
+        console.log(` HTTPS (Local):  https://localhost:${HTTPS_PORT}`);
+        ips.forEach(ip => {
+          console.log(` HTTPS (Mobile): https://${ip}:${HTTPS_PORT}`);
+        });
+        console.log(`======================================================\n`);
+      });
+    } catch (httpsErr) {
+      console.warn('Could not start HTTPS server:', httpsErr.message);
+    }
+  } else {
+    console.log(`======================================================\n`);
+  }
 });
 
-module.exports = server;
+module.exports = httpServer;
