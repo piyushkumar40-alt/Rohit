@@ -282,8 +282,38 @@
     try {
       dom.cameraStatusText.textContent = 'Requesting camera access...';
 
+      // Check if browser context is insecure (mobile browser on http://IP:3000)
+      const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      const isHttps = window.location.protocol === 'https:';
+
+      if (!isLocalhost && !isHttps) {
+        const httpsUrl = `https://${window.location.hostname}:3443`;
+        dom.cameraPlaceholder.classList.remove('hidden');
+        dom.cameraStatusText.innerHTML = `
+          <div style="padding:10px; max-width:320px; margin:0 auto; text-align:center;">
+            <div style="font-size:2rem; margin-bottom:4px;">🔒</div>
+            <h4 style="color:#38bdf8; font-size:1.05rem; margin-bottom:6px;">Mobile Live Camera Needs HTTPS</h4>
+            <p style="font-size:0.82rem; color:#94a3b8; margin-bottom:14px; line-height:1.4;">
+              Mobile Chrome/Safari blocks live camera on plain HTTP. Please switch to HTTPS (Port 3443) or use Photo Mode.
+            </p>
+            <div style="display:flex; flex-direction:column; gap:8px;">
+              <a href="${httpsUrl}" class="btn-primary" style="text-decoration:none; justify-content:center;">
+                <span>🔒</span> Switch to HTTPS (${window.location.hostname}:3443)
+              </a>
+              <button type="button" class="btn-secondary" onclick="document.getElementById('file-photo-input').click()">
+                <span>📸</span> Snap Photo Instead (No HTTPS Needed)
+              </button>
+            </div>
+            <p style="font-size:0.72rem; color:#64748b; margin-top:10px;">
+              *On HTTPS, tap <em>"Advanced" &rarr; "Proceed"</em> to trust the local SSL cert.
+            </p>
+          </div>
+        `;
+        return;
+      }
+
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('Camera streaming not supported or blocked by browser insecure context. Please use "Take Photo" or connect over HTTPS.');
+        throw new Error('Camera device not detected or camera streaming is not supported by your browser.');
       }
 
       const constraints = {
@@ -313,12 +343,19 @@
       requestAnimationFrame(scanVideoFrame);
     } catch (err) {
       console.error('Camera Start Error:', err);
-      dom.cameraStatusText.innerHTML = `
-        <span style="color:#f87171">Camera access unavailable:</span><br>
-        <small>${err.message}</small><br>
-        <span style="color:#94a3b8; font-size:0.8rem">Use the <strong>"📸 Take Photo"</strong> button below or enter Tracking ID manually.</span>
-      `;
       dom.cameraPlaceholder.classList.remove('hidden');
+      dom.cameraStatusText.innerHTML = `
+        <div style="padding:10px; max-width:320px; margin:0 auto; text-align:center;">
+          <div style="font-size:2rem; margin-bottom:4px;">📷</div>
+          <h4 style="color:#f87171; font-size:1.05rem; margin-bottom:6px;">Camera Access Blocked</h4>
+          <p style="font-size:0.82rem; color:#94a3b8; margin-bottom:12px; line-height:1.4;">
+            ${err.name === 'NotAllowedError' ? 'Camera permission was denied. Please allow camera access in browser site settings.' : err.message}
+          </p>
+          <button type="button" class="btn-accent" onclick="document.getElementById('file-photo-input').click()" style="width:100%; justify-content:center;">
+            <span>📸</span> Snap Photo / Upload Image
+          </button>
+        </div>
+      `;
     }
   }
 
@@ -1197,10 +1234,12 @@
         const res = await fetch('/api/network-info');
         const data = await res.json();
 
-        // Use Wi-Fi IP if available, else localhost
-        const targetUrl = data.mobileUrls && data.mobileUrls.length > 0 
-          ? data.mobileUrls[0] 
-          : window.location.origin;
+        // Default to HTTPS if available (port 3443 for camera), fallback to HTTP (port 3000)
+        let httpsUrl = (data.mobileHttpsUrls && data.mobileHttpsUrls.length > 0) ? data.mobileHttpsUrls[0] : '';
+        let httpUrl = (data.mobileUrls && data.mobileUrls.length > 0) ? data.mobileUrls[0] : window.location.origin;
+
+        // Choose preferred target URL: if user wants live camera, https is required
+        let targetUrl = httpsUrl || httpUrl;
 
         dom.mobileUrlText.value = targetUrl;
 
