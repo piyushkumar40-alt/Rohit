@@ -1,0 +1,23 @@
+{
+  "name": "flipkart-returns-tracker",
+  "version": "1.0.0",
+  "description": "Full-stack mobile-responsive Flipkart returns tracker and camera QR/barcode scanner with dual-database reconciliation",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "seed": "node src/seed.js",
+    "test": "node test/test_db.js && node test/test_api.js"
+  },
+  "keywords": [
+    "flipkart",
+    "returns",
+    "reconciliation",
+    "scanner",
+    "barcode",
+    "qr-code",
+    "warehouse",
+    "sqlite"
+  ],
+  "author": "piyushkumar40-alt",
+  "license": "MIT"
+}
