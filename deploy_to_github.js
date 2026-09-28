@@ -2,6 +2,7 @@
 const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || process.argv[2];
 if (!GITHUB_TOKEN) {
@@ -16,9 +17,9 @@ const BRANCH = 'main';
 const FILES_TO_DEPLOY = [
   'README.md',
   '.gitignore',
+  '.nojekyll',
   'package.json',
   'start.bat',
-  '.github/workflows/deploy.yml',
   'index.html',
   'styles.css',
   'app.js',
@@ -98,6 +99,10 @@ async function getFileSha(filePath, branch) {
   }
 }
 
+function calculateGitSha(buf) {
+  return crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
+}
+
 async function uploadFile(relPath, branch) {
   const cleanPath = relPath.replace(/\\/g, '/');
   const fullPath = path.join(__dirname, relPath);
@@ -107,9 +112,15 @@ async function uploadFile(relPath, branch) {
   }
 
   const fileContent = fs.readFileSync(fullPath);
-  const base64Content = fileContent.toString('base64');
+  const localSha = calculateGitSha(fileContent);
   const existingSha = await getFileSha(cleanPath, branch);
 
+  if (existingSha && existingSha === localSha) {
+    console.log(`- ${cleanPath} [${branch}] is unchanged, skipping.`);
+    return;
+  }
+
+  const base64Content = fileContent.toString('base64');
   const payload = {
     message: existingSha ? `Update ${cleanPath}` : `Add ${cleanPath}`,
     content: base64Content,
