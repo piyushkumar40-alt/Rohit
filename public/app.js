@@ -628,6 +628,40 @@
     return false;
   }
 
+  // Helper to extract clean tracking ID from complex QR codes or logistics URLs
+  function extractTrackingId(raw) {
+    if (!raw) return '';
+    let str = String(raw).trim();
+    // 1. If scanned code is a URL (e.g., https://ekartlogistics.com/.../FMPP009812451)
+    if (str.startsWith('http://') || str.startsWith('https://')) {
+      try {
+        const parsed = new URL(str);
+        const parts = parsed.pathname.split('/').filter(Boolean);
+        if (parts.length > 0) {
+          const last = parts[parts.length - 1];
+          if (last && last.length >= 6) return last.trim();
+        }
+      } catch (e) {}
+    }
+    // 2. If barcode/QR contains pipe or tab delimiter (e.g., FMPP009812451|OD309182390123)
+    if (str.includes('|') || str.includes('\t') || str.includes(',')) {
+      const tokens = str.split(/[|\t,]/).map(t => t.trim()).filter(Boolean);
+      for (const tok of tokens) {
+        if (/^FMP/i.test(tok) || /^OD/i.test(tok) || tok.length >= 8) {
+          return tok;
+        }
+      }
+    }
+    return str;
+  }
+
+  // Offscreen sampling canvas for iOS Safari and mobile frame capture
+  const scanCanvas = document.createElement('canvas');
+  const scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
+  let lastScanFrameTime = 0;
+  let isFrameProcessing = false;
+  const FRAME_SAMPLE_INTERVAL_MS = 60; // 16 FPS sample rate - responsive & battery friendly
+
   async function startCamera() {
     try {
       dom.cameraStatusText.textContent = 'Requesting camera access...';
@@ -666,19 +700,58 @@
         throw new Error('Camera device not detected or camera streaming is not supported by your browser.');
       }
 
-      const constraints = {
-        video: {
-          facingMode: { ideal: state.currentFacingMode },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-        audio: false
-      };
+      // Explicitly set iOS Safari attributes on video element
+      dom.cameraVideo.setAttribute('playsinline', 'true');
+      dom.cameraVideo.setAttribute('webkit-playsinline', 'true');
+      dom.cameraVideo.setAttribute('muted', 'true');
+      dom.cameraVideo.setAttribute('autoplay', 'true');
+      dom.cameraVideo.playsInline = true;
+      dom.cameraVideo.muted = true;
+      dom.cameraVideo.autoplay = true;
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      // Stream acquisition with automatic fallback for iOS Safari camera constraints
+      let stream = null;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: state.currentFacingMode },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+      } catch (cErr) {
+        console.warn('Ideal constraints failed, attempting fallback constraints:', cErr);
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: state.currentFacingMode },
+          audio: false
+        });
+      }
+
       state.cameraStream = stream;
       dom.cameraVideo.srcObject = stream;
-      await dom.cameraVideo.play();
+
+      // Wait for iOS Safari to finish metadata & frame sizing before playing
+      await new Promise(resolve => {
+        if (dom.cameraVideo.readyState >= 2 && dom.cameraVideo.videoWidth > 0) {
+          resolve();
+        } else {
+          const onReady = () => {
+            dom.cameraVideo.removeEventListener('loadedmetadata', onReady);
+            dom.cameraVideo.removeEventListener('canplay', onReady);
+            resolve();
+          };
+          dom.cameraVideo.addEventListener('loadedmetadata', onReady);
+          dom.cameraVideo.addEventListener('canplay', onReady);
+          setTimeout(resolve, 800); // 800ms safety timeout
+        }
+      });
+
+      try {
+        await dom.cameraVideo.play();
+      } catch (playErr) {
+        console.warn('Video play caught:', playErr);
+      }
 
       // UI updates
       dom.cameraPlaceholder.classList.add('hidden');
@@ -688,27 +761,11 @@
       // Check flashlight/torch capability
       checkTorchSupport(stream);
 
-      // Start detection loops:
+      // Start unified camera frame scanning loop (jsQR + ZXing + BarcodeDetector)
       state.scanLoopActive = true;
+      lastScanFrameTime = 0;
+      requestAnimationFrame(scanVideoFrame);
 
-      // 1. ZXing continuous scanner (Supports Code 128, Code 39, EAN, QR code universally)
-      const reader = getZxingReader();
-      if (reader) {
-        try {
-          reader.decodeFromVideoElementContinuously(dom.cameraVideo, (result, err) => {
-            if (result && result.getText()) {
-              handleDetectedCode(result.getText());
-            }
-          });
-        } catch (zErr) {
-          console.warn('ZXing continuous decode error:', zErr);
-        }
-      }
-
-      // 2. Native BarcodeDetector frame loop (if supported by platform)
-      if (state.barcodeDetector) {
-        requestAnimationFrame(scanVideoFrame);
-      }
     } catch (err) {
       console.error('Camera Start Error:', err);
       dom.cameraPlaceholder.classList.remove('hidden');
@@ -781,20 +838,90 @@
     }
   }
 
-  // Real-time video frame scanning loop (fallback / accelerator)
-  async function scanVideoFrame() {
+  // Real-time video frame scanning loop powered by jsQR (for iPhone) & ZXing (for Barcodes)
+  async function scanVideoFrame(timestamp) {
     if (!state.scanLoopActive) return;
 
-    if (dom.cameraVideo.readyState === dom.cameraVideo.HAVE_ENOUGH_DATA) {
-      if (state.barcodeDetector) {
+    if (!isFrameProcessing && (timestamp - lastScanFrameTime >= FRAME_SAMPLE_INTERVAL_MS)) {
+      lastScanFrameTime = timestamp;
+
+      if (dom.cameraVideo && dom.cameraVideo.readyState >= 2 && dom.cameraVideo.videoWidth > 0 && dom.cameraVideo.videoHeight > 0) {
+        isFrameProcessing = true;
         try {
-          const barcodes = await state.barcodeDetector.detect(dom.cameraVideo);
-          if (barcodes && barcodes.length > 0) {
-            const rawValue = barcodes[0].rawValue;
-            handleDetectedCode(rawValue);
+          const vWidth = dom.cameraVideo.videoWidth;
+          const vHeight = dom.cameraVideo.videoHeight;
+
+          // Downscale to max 640px to ensure instant (<10ms) jsQR decoding on iPhone
+          const maxDim = 640;
+          let targetW = vWidth;
+          let targetH = vHeight;
+          if (targetW > maxDim || targetH > maxDim) {
+            if (targetW > targetH) {
+              targetH = Math.round((targetH * maxDim) / targetW);
+              targetW = maxDim;
+            } else {
+              targetW = Math.round((targetW * maxDim) / targetH);
+              targetH = maxDim;
+            }
           }
-        } catch (e) {
-          // Frame decode exception ignored
+
+          if (scanCanvas.width !== targetW || scanCanvas.height !== targetH) {
+            scanCanvas.width = targetW;
+            scanCanvas.height = targetH;
+          }
+
+          scanCtx.drawImage(dom.cameraVideo, 0, 0, targetW, targetH);
+          const imageData = scanCtx.getImageData(0, 0, targetW, targetH);
+
+          let detectedRaw = null;
+
+          // 1. ENGINE 1: jsQR (Gold standard for QR codes on iPhone & iOS Safari)
+          if (typeof jsQR !== 'undefined') {
+            try {
+              const qr = jsQR(imageData.data, imageData.width, imageData.height, {
+                inversionAttempts: 'attemptBoth'
+              });
+              if (qr && qr.data && qr.data.trim()) {
+                detectedRaw = qr.data.trim();
+              }
+            } catch (e) {
+              // Frame decoding error ignored
+            }
+          }
+
+          // 2. ENGINE 2: Native BarcodeDetector (Chrome/Android/Desktop)
+          if (!detectedRaw && state.barcodeDetector) {
+            try {
+              const barcodes = await state.barcodeDetector.detect(scanCanvas);
+              if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+                detectedRaw = barcodes[0].rawValue.trim();
+              }
+            } catch (e) {}
+          }
+
+          // 3. ENGINE 3: ZXing for 1D Barcodes (Code 128, EAN, UPC, Code 39)
+          if (!detectedRaw && typeof ZXing !== 'undefined') {
+            try {
+              const reader = getZxingReader();
+              if (reader) {
+                const zxResult = await reader.decode(scanCanvas);
+                if (zxResult && zxResult.getText()) {
+                  detectedRaw = zxResult.getText().trim();
+                }
+              }
+            } catch (e) {
+              // ZXing NotFoundException on blank frames - normal behavior
+            }
+          }
+
+          if (detectedRaw) {
+            const cleanId = extractTrackingId(detectedRaw);
+            handleDetectedCode(cleanId);
+          }
+        } catch (err) {
+          // Frame error guard
+        } finally {
+          isFrameProcessing = false;
         }
       }
     }
@@ -804,7 +931,7 @@
     }
   }
 
-  // Handle Photo / File snapshot scanning
+  // Handle Photo / File snapshot scanning (Full resolution jsQR + ZXing analysis)
   dom.filePhotoInput.addEventListener('change', async (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
@@ -814,34 +941,65 @@
       img.onload = async () => {
         let detectedText = null;
 
-        // 1. Try ZXing Multi-Format Reader
-        const reader = getZxingReader();
-        if (reader) {
-          try {
-            const zxResult = await reader.decodeFromImageElement(img);
-            if (zxResult && zxResult.getText()) {
-              detectedText = zxResult.getText();
-            }
-          } catch (e) {
-            // ZXing did not detect code in this image frame
+        // Render photo to offscreen canvas
+        const pCanvas = document.createElement('canvas');
+        const pCtx = pCanvas.getContext('2d', { willReadFrequently: true });
+        let w = img.naturalWidth || img.width;
+        let h = img.naturalHeight || img.height;
+        const maxDim = 1200;
+        if (w > maxDim || h > maxDim) {
+          if (w > h) {
+            h = Math.round((h * maxDim) / w);
+            w = maxDim;
+          } else {
+            w = Math.round((w * maxDim) / h);
+            h = maxDim;
           }
         }
+        pCanvas.width = w;
+        pCanvas.height = h;
+        pCtx.drawImage(img, 0, 0, w, h);
+        const imgData = pCtx.getImageData(0, 0, w, h);
 
-        // 2. Try native BarcodeDetector if available
+        // 1. Try jsQR first (Ultra-reliable for iPhone QR codes)
+        if (typeof jsQR !== 'undefined') {
+          try {
+            const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
+            if (qr && qr.data && qr.data.trim()) {
+              detectedText = qr.data.trim();
+            }
+          } catch (e) {}
+        }
+
+        // 2. Try ZXing
+        if (!detectedText && typeof ZXing !== 'undefined') {
+          try {
+            const reader = getZxingReader();
+            if (reader) {
+              const zxResult = await reader.decode(pCanvas);
+              if (zxResult && zxResult.getText()) {
+                detectedText = zxResult.getText().trim();
+              }
+            }
+          } catch (e) {}
+        }
+
+        // 3. Try Native BarcodeDetector
         if (!detectedText) {
           if (!state.barcodeDetector) await initBarcodeDetector();
           if (state.barcodeDetector) {
             try {
-              const barcodes = await state.barcodeDetector.detect(img);
-              if (barcodes && barcodes.length > 0) {
-                detectedText = barcodes[0].rawValue;
+              const barcodes = await state.barcodeDetector.detect(pCanvas);
+              if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+                detectedText = barcodes[0].rawValue.trim();
               }
             } catch (err) {}
           }
         }
 
         if (detectedText) {
-          handleDetectedCode(detectedText);
+          const cleanId = extractTrackingId(detectedText);
+          handleDetectedCode(cleanId);
         } else {
           alert('No barcode or QR code detected in the photo. Please ensure good lighting and a clear picture of the shipping label.');
         }
