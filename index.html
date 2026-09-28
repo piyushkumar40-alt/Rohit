@@ -7,15 +7,17 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#1e293b">
   <title>Flipkart Returns Tracker & Scanner</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=2.0">
   <!-- Offline QR generator for phone connection -->
-  <script src="vendor/qrcode.js"></script>
+  <script src="vendor/qrcode.js?v=2.0"></script>
   <!-- Local SheetJS Excel Parser -->
-  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="vendor/xlsx.full.min.js?v=2.0"></script>
+  <!-- Local Html5Qrcode Engine (Standard for iOS Safari & Android mobile scanning) -->
+  <script src="vendor/html5-qrcode.min.js?v=2.0"></script>
   <!-- Local jsQR (Ultra-reliable QR Code engine for iPhone / iOS Safari) -->
-  <script src="vendor/jsqr.js"></script>
+  <script src="vendor/jsqr.js?v=2.0"></script>
   <!-- Local ZXing Barcode & QR Code Engine -->
-  <script src="vendor/zxing.min.js"></script>
+  <script src="vendor/zxing.min.js?v=2.0"></script>
 </head>
 <body>
   <div id="app" class="app-container">
@@ -75,11 +77,12 @@
         <!-- Live Camera Viewport -->
         <div class="scanner-card">
           <div class="camera-viewport-container" id="camera-container">
-            <video id="camera-video" playsinline webkit-playsinline muted autoplay></video>
+            <div id="qr-reader" style="width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 1;"></div>
+            <video id="camera-video" playsinline webkit-playsinline muted autoplay style="display:none;"></video>
             <canvas id="camera-canvas" class="hidden"></canvas>
             
             <!-- Scanning Reticle Overlay -->
-            <div class="scanner-overlay">
+            <div class="scanner-overlay" style="z-index: 2;">
               <div class="scanner-laser" id="scanner-laser"></div>
               <div class="reticle-box">
                 <div class="corner top-left"></div>
@@ -87,7 +90,7 @@
                 <div class="corner bottom-left"></div>
                 <div class="corner bottom-right"></div>
               </div>
-              <p class="reticle-hint">Point camera at QR code or Barcode</p>
+              <p class="reticle-hint" id="scanner-hud-text">Point camera at QR code or Barcode</p>
             </div>
 
             <!-- Viewport Overlay Status (e.g. Camera Off / Error) -->
@@ -480,6 +483,6 @@
   </div>
 
   <!-- Main Application Logic -->
-  <script src="app.js"></script>
+  <script src="app.js?v=2.0"></script>
 </body>
 </html>
