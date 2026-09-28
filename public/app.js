@@ -24,6 +24,342 @@
     scansFilter: 'all',
   };
 
+  // --- Embedded Sample Flipkart Returns Manifest ---
+  const SAMPLE_FLIPKART_DATA = [
+    {
+      tracking_id: 'FMPP009812451',
+      order_id: 'OD309182390123',
+      order_item_id: 'OI9823101',
+      sku: 'TSHIRT-SLM-BLK-L',
+      product_name: 'Men Slim Fit Black T-Shirt (Large)',
+      return_reason: 'Quality issue / Stitching loose',
+      return_type: 'Customer Return',
+      return_date: '2026-09-20',
+      customer_name: 'Rahul Sharma'
+    },
+    {
+      tracking_id: 'FMPP009812452',
+      order_id: 'OD309182390124',
+      order_item_id: 'OI9823102',
+      sku: 'CASUAL-SHOE-BRN-9',
+      product_name: 'Brown Leather Casual Shoes (Size 9)',
+      return_reason: 'Size too small',
+      return_type: 'Customer Return',
+      return_date: '2026-09-21',
+      customer_name: 'Amit Patel'
+    },
+    {
+      tracking_id: 'FMPP009812453',
+      order_id: 'OD309182390125',
+      order_item_id: 'OI9823103',
+      sku: 'BT-SPEAKER-BLU',
+      product_name: 'Waterproof Portable Bluetooth Speaker',
+      return_reason: 'Product not working / No power',
+      return_type: 'Courier Return (RTO)',
+      return_date: '2026-09-21',
+      customer_name: 'Sneha Verma'
+    },
+    {
+      tracking_id: 'FMPP009812454',
+      order_id: 'OD309182390126',
+      order_item_id: 'OI9823104',
+      sku: 'WRISTWATCH-SLVR-01',
+      product_name: 'Stainless Steel Chronograph Watch',
+      return_reason: 'Wrong item delivered',
+      return_type: 'Customer Return',
+      return_date: '2026-09-22',
+      customer_name: 'Vikas Kumar'
+    },
+    {
+      tracking_id: 'FMPP009812455',
+      order_id: 'OD309182390127',
+      order_item_id: 'OI9823105',
+      sku: 'SUNGLASS-POLAR-BLK',
+      product_name: 'Polarized Aviator Sunglasses',
+      return_reason: 'Customer not available at delivery',
+      return_type: 'Courier Return (RTO)',
+      return_date: '2026-09-22',
+      customer_name: 'Pooja Reddy'
+    },
+    {
+      tracking_id: 'FMPP009812456',
+      order_id: 'OD309182390128',
+      order_item_id: 'OI9823106',
+      sku: 'BACKPACK-TRVL-GREY',
+      product_name: 'Water Resistant Laptop Backpack 30L',
+      return_reason: 'Changed mind',
+      return_type: 'Customer Return',
+      return_date: '2026-09-23',
+      customer_name: 'Karan Singh'
+    },
+    {
+      tracking_id: 'FMPP009812457',
+      order_id: 'OD309182390129',
+      order_item_id: 'OI9823107',
+      sku: 'YOGA-MAT-6MM-PURP',
+      product_name: 'Eco Anti-Skid Yoga Mat 6mm Purple',
+      return_reason: 'Color mismatch',
+      return_type: 'Customer Return',
+      return_date: '2026-09-23',
+      customer_name: 'Neha Gupta'
+    },
+    {
+      tracking_id: 'FMPP009812458',
+      order_id: 'OD309182390130',
+      order_item_id: 'OI9823108',
+      sku: 'HEADPHONES-ANC-BLK',
+      product_name: 'Active Noise Cancelling Wireless Headphones',
+      return_reason: 'Audio cut out in one ear',
+      return_type: 'Customer Return',
+      return_date: '2026-09-23',
+      customer_name: 'Rohan Joshi'
+    }
+  ];
+
+  // --- Client-Side Local Storage Database (Universal Fallback for GitHub Pages) ---
+  const clientStore = {
+    isStaticHost: window.location.hostname.endsWith('github.io') || window.location.protocol === 'file:',
+
+    getDb1() {
+      try {
+        const d = localStorage.getItem('flipkart_returns_db1');
+        return d ? JSON.parse(d) : [];
+      } catch (e) { return []; }
+    },
+    saveDb1(items) {
+      try { localStorage.setItem('flipkart_returns_db1', JSON.stringify(items)); } catch (e) {}
+    },
+    getDb2() {
+      try {
+        const d = localStorage.getItem('flipkart_scans_db2');
+        return d ? JSON.parse(d) : [];
+      } catch (e) { return []; }
+    },
+    saveDb2(items) {
+      try { localStorage.setItem('flipkart_scans_db2', JSON.stringify(items)); } catch (e) {}
+    },
+    initDefaults() {
+      if (this.isStaticHost) {
+        const db1 = this.getDb1();
+        if (db1.length === 0) {
+          this.saveDb1(SAMPLE_FLIPKART_DATA);
+        }
+      }
+    },
+    batchInsert(records) {
+      const db1 = this.getDb1();
+      const existingIds = new Set(db1.map(r => String(r.tracking_id).trim().toLowerCase()));
+      let inserted = 0;
+      let ignored = 0;
+      records.forEach(r => {
+        if (!r.tracking_id || !String(r.tracking_id).trim()) {
+          ignored++;
+          return;
+        }
+        const tid = String(r.tracking_id).trim();
+        if (existingIds.has(tid.toLowerCase())) {
+          ignored++;
+        } else {
+          existingIds.add(tid.toLowerCase());
+          db1.push({
+            ...r,
+            tracking_id: tid,
+            created_at: new Date().toISOString().replace('T', ' ').slice(0, 19)
+          });
+          inserted++;
+        }
+      });
+      this.saveDb1(db1);
+      return { totalRows: records.length, inserted, ignored };
+    },
+    processScan(rawTrackingId, scanSource = 'camera') {
+      const trackingId = String(rawTrackingId || '').trim();
+      if (!trackingId) throw new Error('Tracking ID cannot be empty');
+
+      const db1 = this.getDb1();
+      const db2 = this.getDb2();
+
+      const existingScan = db2.find(s => s.tracking_id.toLowerCase() === trackingId.toLowerCase());
+      const returnRecord = db1.find(r => r.tracking_id.toLowerCase() === trackingId.toLowerCase());
+      const foundInDb1 = Boolean(returnRecord);
+
+      if (existingScan) {
+        const recordedAt = existingScan.scanned_at;
+        if (foundInDb1) {
+          return {
+            scenario: 1,
+            code: 'ALREADY_RECORDED_MATCHED',
+            tracking_id: trackingId,
+            already_scanned: true,
+            found_in_db1: true,
+            recorded_at: recordedAt,
+            message: `Already recorded in Returns on ${recordedAt}`,
+            flipkart_data: returnRecord,
+            scan_id: existingScan.id
+          };
+        } else {
+          return {
+            scenario: 2,
+            code: 'ALREADY_RECORDED_UNMATCHED',
+            tracking_id: trackingId,
+            already_scanned: true,
+            found_in_db1: false,
+            recorded_at: recordedAt,
+            message: `Already recorded on ${recordedAt}, but not found in Flipkart Return Records`,
+            flipkart_data: null,
+            scan_id: existingScan.id
+          };
+        }
+      }
+
+      // New scan
+      const recordedAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      const newScan = {
+        id: Date.now(),
+        tracking_id: trackingId,
+        scanned_at: recordedAt,
+        matched_in_db1: foundInDb1 ? 1 : 0,
+        scan_source: scanSource,
+        notes: ''
+      };
+      db2.unshift(newScan);
+      this.saveDb2(db2);
+
+      if (foundInDb1) {
+        return {
+          scenario: 3,
+          code: 'NEW_SCAN_MATCHED',
+          tracking_id: trackingId,
+          already_scanned: false,
+          found_in_db1: true,
+          recorded_at: recordedAt,
+          message: `Tracking ID matched! Saved to Returns on ${recordedAt}`,
+          flipkart_data: returnRecord,
+          scan_id: newScan.id
+        };
+      } else {
+        return {
+          scenario: 4,
+          code: 'NEW_SCAN_UNMATCHED',
+          tracking_id: trackingId,
+          already_scanned: false,
+          found_in_db1: false,
+          recorded_at: recordedAt,
+          message: `Tracking ID not found in Flipkart Return Records, but saved in Returns with timestamp ${recordedAt}`,
+          flipkart_data: null,
+          scan_id: newScan.id
+        };
+      }
+    },
+    getMissing({ search = '', limit = 25, page = 1 } = {}) {
+      const db1 = this.getDb1();
+      const db2 = this.getDb2();
+      const scannedIds = new Set(db2.map(s => s.tracking_id.toLowerCase()));
+
+      let rows = db1.filter(r => !scannedIds.has(String(r.tracking_id).trim().toLowerCase()));
+
+      if (search && search.trim()) {
+        const s = search.trim().toLowerCase();
+        rows = rows.filter(r =>
+          (r.tracking_id && r.tracking_id.toLowerCase().includes(s)) ||
+          (r.order_id && r.order_id.toLowerCase().includes(s)) ||
+          (r.sku && r.sku.toLowerCase().includes(s)) ||
+          (r.product_name && r.product_name.toLowerCase().includes(s)) ||
+          (r.customer_name && r.customer_name.toLowerCase().includes(s))
+        );
+      }
+
+      const total = rows.length;
+      const offset = (page - 1) * limit;
+      const pagedRows = rows.slice(offset, offset + limit).map(r => ({
+        ...r,
+        days_pending: 0
+      }));
+
+      return {
+        rows: pagedRows,
+        total,
+        limit,
+        page,
+        totalPages: Math.ceil(total / limit) || 1
+      };
+    },
+    getScans({ search = '', matchedOnly = null, limit = 25, page = 1 } = {}) {
+      const db1 = this.getDb1();
+      const db2 = this.getDb2();
+      const db1Map = new Map(db1.map(r => [r.tracking_id.toLowerCase(), r]));
+
+      let rows = db2.map(s => {
+        const flip = db1Map.get(s.tracking_id.toLowerCase());
+        return {
+          id: s.id,
+          tracking_id: s.tracking_id,
+          scanned_at: s.scanned_at,
+          matched_in_db1: s.matched_in_db1,
+          scan_source: s.scan_source,
+          order_id: flip ? flip.order_id : '',
+          sku: flip ? flip.sku : '',
+          product_name: flip ? flip.product_name : '',
+          return_reason: flip ? flip.return_reason : '',
+          customer_name: flip ? flip.customer_name : ''
+        };
+      });
+
+      if (matchedOnly === '1' || matchedOnly === 1) {
+        rows = rows.filter(r => r.matched_in_db1 === 1);
+      } else if (matchedOnly === '0' || matchedOnly === 0) {
+        rows = rows.filter(r => r.matched_in_db1 === 0);
+      }
+
+      if (search && search.trim()) {
+        const s = search.trim().toLowerCase();
+        rows = rows.filter(r =>
+          (r.tracking_id && r.tracking_id.toLowerCase().includes(s)) ||
+          (r.order_id && r.order_id.toLowerCase().includes(s)) ||
+          (r.product_name && r.product_name.toLowerCase().includes(s))
+        );
+      }
+
+      const total = rows.length;
+      const offset = (page - 1) * limit;
+      const pagedRows = rows.slice(offset, offset + limit);
+
+      return {
+        rows: pagedRows,
+        total,
+        limit,
+        page,
+        totalPages: Math.ceil(total / limit) || 1
+      };
+    },
+    getStats() {
+      const db1 = this.getDb1();
+      const db2 = this.getDb2();
+      const totalUploaded = db1.length;
+      const totalScanned = db2.length;
+      const matchedScans = db2.filter(s => s.matched_in_db1 === 1).length;
+      const unmatchedScans = db2.filter(s => s.matched_in_db1 === 0).length;
+      const missingCount = Math.max(0, totalUploaded - matchedScans);
+      const returnReceivedRate = totalUploaded > 0 ? Math.round((matchedScans / totalUploaded) * 100) : 0;
+      return {
+        totalUploaded,
+        totalScanned,
+        matchedScans,
+        unmatchedScans,
+        missingCount,
+        returnReceivedRate
+      };
+    },
+    deleteScan(id) {
+      const db2 = this.getDb2().filter(s => s.id !== id && String(s.id) !== String(id));
+      this.saveDb2(db2);
+      return true;
+    }
+  };
+
+  // Initialize client store defaults if on static host
+  clientStore.initDefaults();
+
   // --- DOM Elements ---
   const dom = {
     navTabs: document.querySelectorAll('.nav-tab'),
@@ -74,6 +410,7 @@
     missingSearchInput: document.getElementById('missing-search-input'),
     btnRefreshMissing: document.getElementById('btn-refresh-missing'),
     btnExportMissingCsv: document.getElementById('btn-export-missing-csv'),
+    btnExportMissingExcel: document.getElementById('btn-export-missing-excel'),
     missingTableTbody: document.getElementById('missing-table-tbody'),
     missingPaginationInfo: document.getElementById('missing-pagination-info'),
     btnMissingPrev: document.getElementById('btn-missing-prev'),
@@ -263,7 +600,20 @@
   // ==========================================================================
   // SCANNER ENGINE (CAMERA & BARCODE / QR DETECTION)
   // ==========================================================================
+  let zxingReader = null;
+  function getZxingReader() {
+    if (!zxingReader && typeof ZXing !== 'undefined' && ZXing.BrowserMultiFormatReader) {
+      try {
+        zxingReader = new ZXing.BrowserMultiFormatReader();
+      } catch (e) {
+        console.warn('ZXing init error:', e);
+      }
+    }
+    return zxingReader;
+  }
+
   async function initBarcodeDetector() {
+    getZxingReader();
     if ('BarcodeDetector' in window) {
       try {
         const supportedFormats = await BarcodeDetector.getSupportedFormats();
@@ -338,9 +688,27 @@
       // Check flashlight/torch capability
       checkTorchSupport(stream);
 
-      // Start detection loop
+      // Start detection loops:
       state.scanLoopActive = true;
-      requestAnimationFrame(scanVideoFrame);
+
+      // 1. ZXing continuous scanner (Supports Code 128, Code 39, EAN, QR code universally)
+      const reader = getZxingReader();
+      if (reader) {
+        try {
+          reader.decodeFromVideoElementContinuously(dom.cameraVideo, (result, err) => {
+            if (result && result.getText()) {
+              handleDetectedCode(result.getText());
+            }
+          });
+        } catch (zErr) {
+          console.warn('ZXing continuous decode error:', zErr);
+        }
+      }
+
+      // 2. Native BarcodeDetector frame loop (if supported by platform)
+      if (state.barcodeDetector) {
+        requestAnimationFrame(scanVideoFrame);
+      }
     } catch (err) {
       console.error('Camera Start Error:', err);
       dom.cameraPlaceholder.classList.remove('hidden');
@@ -361,6 +729,11 @@
 
   function stopCamera() {
     state.scanLoopActive = false;
+    if (zxingReader) {
+      try {
+        zxingReader.reset();
+      } catch (e) {}
+    }
     if (state.cameraStream) {
       state.cameraStream.getTracks().forEach(track => track.stop());
       state.cameraStream = null;
@@ -408,7 +781,7 @@
     }
   }
 
-  // Real-time video frame scanning loop
+  // Real-time video frame scanning loop (fallback / accelerator)
   async function scanVideoFrame() {
     if (!state.scanLoopActive) return;
 
@@ -439,19 +812,39 @@
     try {
       const img = new Image();
       img.onload = async () => {
-        if (!state.barcodeDetector) await initBarcodeDetector();
-        if (state.barcodeDetector) {
+        let detectedText = null;
+
+        // 1. Try ZXing Multi-Format Reader
+        const reader = getZxingReader();
+        if (reader) {
           try {
-            const barcodes = await state.barcodeDetector.detect(img);
-            if (barcodes && barcodes.length > 0) {
-              handleDetectedCode(barcodes[0].rawValue);
-              return;
+            const zxResult = await reader.decodeFromImageElement(img);
+            if (zxResult && zxResult.getText()) {
+              detectedText = zxResult.getText();
             }
-          } catch (err) {
-            console.warn('Photo detect failed:', err);
+          } catch (e) {
+            // ZXing did not detect code in this image frame
           }
         }
-        alert('No barcode or QR code detected in the photo. Please ensure good lighting and try again.');
+
+        // 2. Try native BarcodeDetector if available
+        if (!detectedText) {
+          if (!state.barcodeDetector) await initBarcodeDetector();
+          if (state.barcodeDetector) {
+            try {
+              const barcodes = await state.barcodeDetector.detect(img);
+              if (barcodes && barcodes.length > 0) {
+                detectedText = barcodes[0].rawValue;
+              }
+            } catch (err) {}
+          }
+        }
+
+        if (detectedText) {
+          handleDetectedCode(detectedText);
+        } else {
+          alert('No barcode or QR code detected in the photo. Please ensure good lighting and a clear picture of the shipping label.');
+        }
       };
       img.src = URL.createObjectURL(file);
     } catch (err) {
@@ -526,15 +919,23 @@
   // ==========================================================================
   async function submitScan(trackingId, source = 'camera') {
     try {
-      const res = await fetch('/api/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tracking_id: trackingId, source })
-      });
-
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        throw new Error(data.message || 'Scan processing failed');
+      let data = null;
+      if (clientStore.isStaticHost) {
+        data = clientStore.processScan(trackingId, source);
+      } else {
+        try {
+          const res = await fetch('/api/scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tracking_id: trackingId, source })
+          });
+          data = await res.json();
+          if (!res.ok || data.error) {
+            throw new Error(data.message || 'Scan processing failed');
+          }
+        } catch (fetchErr) {
+          data = clientStore.processScan(trackingId, source);
+        }
       }
 
       // Render the result based on the 4 scenarios
@@ -546,7 +947,7 @@
       // Refresh missing counter in navigation
       updateCounts();
     } catch (err) {
-      console.error('Scan API error:', err);
+      console.error('Scan processing error:', err);
       alert('Error recording scan: ' + err.message);
     }
   }
@@ -580,7 +981,7 @@
       // SCENARIO 3: First Scan + Found in DB1 (Green / Verified)
       card.classList.add('status-matched');
       dom.resultIcon.textContent = '✅';
-      dom.resultBadge.textContent = 'VERIFIED & RECORDED';
+      dom.resultBadge.textContent = 'STATUS: MARKED UPDATED & RECEIVED';
       dom.resultMessage.textContent = data.message;
       playSuccessChime();
       triggerHaptic('success');
@@ -590,7 +991,7 @@
       // SCENARIO 4: First Scan + NOT found in DB1 (Warning / Yellow)
       card.classList.add('status-unmatched');
       dom.resultIcon.textContent = '⚠️';
-      dom.resultBadge.textContent = 'UNEXPECTED RETURN';
+      dom.resultBadge.textContent = 'STATUS: UNLISTED PACKAGE (UPDATED)';
       dom.resultMessage.textContent = data.message;
       playWarningBeep();
       triggerHaptic('warning');
@@ -600,7 +1001,7 @@
       // SCENARIO 1: Already Scanned + Found in DB1 (Info / Blue)
       card.classList.add('status-repeat-matched');
       dom.resultIcon.textContent = 'ℹ️';
-      dom.resultBadge.textContent = 'ALREADY RECORDED';
+      dom.resultBadge.textContent = 'STATUS: ALREADY UPDATED';
       dom.resultMessage.textContent = data.message;
       playRepeatBeep();
       triggerHaptic('repeat');
@@ -610,7 +1011,7 @@
       // SCENARIO 2: Already Scanned + NOT found in DB1 (Orange)
       card.classList.add('status-repeat-unmatched');
       dom.resultIcon.textContent = '🔁';
-      dom.resultBadge.textContent = 'ALREADY RECORDED (UNLISTED)';
+      dom.resultBadge.textContent = 'STATUS: ALREADY RECORDED (UNLISTED)';
       dom.resultMessage.textContent = data.message;
       playRepeatBeep();
       triggerHaptic('repeat');
@@ -687,9 +1088,18 @@
     `;
 
     try {
-      const q = encodeURIComponent(state.missingSearch);
-      const res = await fetch(`/api/missing?search=${q}&page=${state.missingPage}&limit=25`);
-      const data = await res.json();
+      let data = null;
+      if (clientStore.isStaticHost) {
+        data = clientStore.getMissing({ search: state.missingSearch, page: state.missingPage, limit: 25 });
+      } else {
+        try {
+          const q = encodeURIComponent(state.missingSearch);
+          const res = await fetch(`/api/missing?search=${q}&page=${state.missingPage}&limit=25`);
+          data = await res.json();
+        } catch (fetchErr) {
+          data = clientStore.getMissing({ search: state.missingSearch, page: state.missingPage, limit: 25 });
+        }
+      }
 
       dom.missingHeadlineCount.textContent = data.total;
       dom.navMissingCount.textContent = data.total;
@@ -726,7 +1136,7 @@
             <td>${daysBadge}</td>
             <td>
               <button class="btn-primary-sm btn-quick-scan" data-id="${escapeHtml(row.tracking_id)}">
-                Mark Received
+                ✓ Mark Updated
               </button>
             </td>
           </tr>
@@ -785,6 +1195,44 @@
     window.location.href = '/api/export-missing-csv';
   });
 
+  // Export Missing Excel (.XLSX)
+  if (dom.btnExportMissingExcel) {
+    dom.btnExportMissingExcel.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/missing?limit=5000');
+        const data = await res.json();
+        if (!data.rows || data.rows.length === 0) {
+          alert('No pending returns to export.');
+          return;
+        }
+
+        const exportData = data.rows.map(r => ({
+          'Tracking ID': r.tracking_id,
+          'Order ID': r.order_id || '',
+          'SKU': r.sku || '',
+          'Product Name': r.product_name || '',
+          'Return Reason': r.return_reason || '',
+          'Return Type': r.return_type || '',
+          'Return Date': r.return_date || '',
+          'Customer Name': r.customer_name || '',
+          'Days Pending': r.days_pending || 0,
+          'Status': 'PENDING'
+        }));
+
+        if (typeof XLSX !== 'undefined') {
+          const ws = XLSX.utils.json_to_sheet(exportData);
+          const wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, 'Pending Returns');
+          XLSX.writeFile(wb, `pending_returns_${new Date().toISOString().slice(0, 10)}.xlsx`);
+        } else {
+          window.location.href = '/api/export-missing-csv';
+        }
+      } catch (err) {
+        alert('Export failed: ' + err.message);
+      }
+    });
+  }
+
   // ==========================================================================
   // EXCEL / CSV FILE UPLOAD & PARSER
   // ==========================================================================
@@ -816,13 +1264,19 @@
 
     // 1-Click Load Sample Flipkart Data
     dom.btnLoadSample.addEventListener('click', async () => {
-      try {
-        const res = await fetch('/api/sample-flipkart-data');
-        const data = await res.json();
-        state.uploadedFileRecords = data;
-        displayFilePreview(data);
-      } catch (e) {
-        alert('Failed to load sample data: ' + e.message);
+      if (clientStore.isStaticHost) {
+        state.uploadedFileRecords = SAMPLE_FLIPKART_DATA;
+        displayFilePreview(SAMPLE_FLIPKART_DATA);
+      } else {
+        try {
+          const res = await fetch('/api/sample-flipkart-data');
+          const data = await res.json();
+          state.uploadedFileRecords = data;
+          displayFilePreview(data);
+        } catch (e) {
+          state.uploadedFileRecords = SAMPLE_FLIPKART_DATA;
+          displayFilePreview(SAMPLE_FLIPKART_DATA);
+        }
       }
     });
 
@@ -941,7 +1395,7 @@
         const strVal = String(val).trim();
 
         // Tracking ID mapping
-        if (['trackingid', 'trackingno', 'awb', 'awbno', 'returnid', 'waybill', 'trackingnumber', 'returntrackingid'].includes(k)) {
+        if (['trackingid', 'trackingno', 'awb', 'awbno', 'returnid', 'waybill', 'trackingnumber', 'returntrackingid', 'barcode', 'scanid', 'packageno', 'packagenumber', 'docketno', 'consignmentno', 'lrno'].includes(k)) {
           if (!normalized.tracking_id) normalized.tracking_id = strVal;
         }
         // Order ID mapping
@@ -1042,14 +1496,24 @@
     dom.btnConfirmImport.innerHTML = `<span>⏳</span> Saving...`;
 
     try {
-      const res = await fetch('/api/upload-returns', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ records: state.uploadedFileRecords })
-      });
-
-      const result = await res.json();
-      if (!res.ok || result.error) throw new Error(result.message || 'Import failed');
+      let result;
+      if (clientStore.isStaticHost) {
+        const stats = clientStore.batchInsert(state.uploadedFileRecords);
+        result = { success: true, stats };
+      } else {
+        try {
+          const res = await fetch('/api/upload-returns', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ records: state.uploadedFileRecords })
+          });
+          result = await res.json();
+          if (!res.ok || result.error) throw new Error(result.message || 'Import failed');
+        } catch (fetchErr) {
+          const stats = clientStore.batchInsert(state.uploadedFileRecords);
+          result = { success: true, stats };
+        }
+      }
 
       showUploadStatus(true, `
         <strong>Upload Successful!</strong><br>
@@ -1088,13 +1552,21 @@
     `;
 
     try {
-      const q = encodeURIComponent(state.scansSearch);
-      let matchedParam = '';
-      if (state.scansFilter === '1') matchedParam = '&matchedOnly=1';
-      if (state.scansFilter === '0') matchedParam = '&matchedOnly=0';
-
-      const res = await fetch(`/api/scans?search=${q}${matchedParam}&page=${state.scansPage}&limit=25`);
-      const data = await res.json();
+      let data = null;
+      if (clientStore.isStaticHost) {
+        data = clientStore.getScans({ search: state.scansSearch, matchedOnly: state.scansFilter, page: state.scansPage, limit: 25 });
+      } else {
+        try {
+          const q = encodeURIComponent(state.scansSearch);
+          let matchedParam = '';
+          if (state.scansFilter === '1') matchedParam = '&matchedOnly=1';
+          if (state.scansFilter === '0') matchedParam = '&matchedOnly=0';
+          const res = await fetch(`/api/scans?search=${q}${matchedParam}&page=${state.scansPage}&limit=25`);
+          data = await res.json();
+        } catch (fetchErr) {
+          data = clientStore.getScans({ search: state.scansSearch, matchedOnly: state.scansFilter, page: state.scansPage, limit: 25 });
+        }
+      }
 
       dom.navScansCount.textContent = data.total;
 
@@ -1141,7 +1613,15 @@
         btn.addEventListener('click', async () => {
           if (!confirm('Are you sure you want to remove this scan record?')) return;
           const scanId = btn.getAttribute('data-id');
-          await fetch(`/api/scans/${scanId}`, { method: 'DELETE' });
+          if (clientStore.isStaticHost) {
+            clientStore.deleteScan(scanId);
+          } else {
+            try {
+              await fetch(`/api/scans/${scanId}`, { method: 'DELETE' });
+            } catch (e) {
+              clientStore.deleteScan(scanId);
+            }
+          }
           loadScans();
           updateCounts();
         });
@@ -1198,8 +1678,17 @@
   // ==========================================================================
   async function loadDashboardStats() {
     try {
-      const res = await fetch('/api/dashboard');
-      const stats = await res.json();
+      let stats = null;
+      if (clientStore.isStaticHost) {
+        stats = clientStore.getStats();
+      } else {
+        try {
+          const res = await fetch('/api/dashboard');
+          stats = await res.json();
+        } catch (fetchErr) {
+          stats = clientStore.getStats();
+        }
+      }
 
       dom.kpiUploaded.textContent = stats.totalUploaded;
       dom.kpiScanned.textContent = stats.totalScanned;
