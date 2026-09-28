@@ -7,11 +7,13 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#1e293b">
   <title>Flipkart Returns Tracker & Scanner</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="styles.css">
   <!-- Offline QR generator for phone connection -->
-  <script src="/vendor/qrcode.js"></script>
-  <!-- SheetJS CDN with fallback -->
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="vendor/qrcode.js"></script>
+  <!-- Local SheetJS Excel Parser -->
+  <script src="vendor/xlsx.full.min.js"></script>
+  <!-- Local ZXing Barcode & QR Code Engine -->
+  <script src="vendor/zxing.min.js"></script>
 </head>
 <body>
   <div id="app" class="app-container">
@@ -44,8 +46,8 @@
         <span class="tab-label">Scanner</span>
       </button>
       <button class="nav-tab" data-tab="tab-missing">
-        <span class="tab-icon">⚠️</span>
-        <span class="tab-label">Missing Returns</span>
+        <span class="tab-icon">⏳</span>
+        <span class="tab-label">Pending Returns</span>
         <span class="tab-counter badge-danger" id="nav-missing-count">0</span>
       </button>
       <button class="nav-tab" data-tab="tab-upload">
@@ -53,8 +55,8 @@
         <span class="tab-label">Upload Excel</span>
       </button>
       <button class="nav-tab" data-tab="tab-scans">
-        <span class="tab-icon">📋</span>
-        <span class="tab-label">Scans</span>
+        <span class="tab-icon">✅</span>
+        <span class="tab-label">Updated / Scanned</span>
         <span class="tab-counter badge-neutral" id="nav-scans-count">0</span>
       </button>
       <button class="nav-tab" data-tab="tab-dashboard">
@@ -194,19 +196,22 @@
         </div>
       </section>
 
-      <!-- TAB 2: MISSING RETURNS (CORE FEATURE) -->
+      <!-- TAB 2: MISSING / PENDING RETURNS -->
       <section id="tab-missing" class="tab-view">
         <div class="hero-alert-card">
-          <div class="hero-alert-icon">⚠️</div>
+          <div class="hero-alert-icon">⏳</div>
           <div class="hero-alert-content">
-            <h2 class="hero-title"><span id="missing-headline-count">0</span> Returns Pending / Missing</h2>
+            <h2 class="hero-title"><span id="missing-headline-count">0</span> Returning Orders Pending</h2>
             <p class="hero-description">
-              These items were uploaded in your Flipkart return manifest (Flipkart Return Records) but have <strong>not been scanned or received</strong> yet in Returns.
+              These items were uploaded from your return Excel sheet but have <strong>not been scanned or marked updated</strong> yet. Scan them with your camera or click "Mark Updated" below.
             </p>
           </div>
-          <div class="hero-alert-actions">
+          <div class="hero-alert-actions" style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="btn-export-missing-excel" class="btn-accent">
+              <span>📊</span> Export Pending (.XLSX)
+            </button>
             <button id="btn-export-missing-csv" class="btn-primary">
-              <span>📥</span> Export Missing (.CSV)
+              <span>📥</span> Export Pending (.CSV)
             </button>
           </div>
         </div>
@@ -271,7 +276,10 @@
               <button id="btn-load-sample" class="btn-secondary-sm">
                 <span>⚡</span> Load Sample Flipkart Data
               </button>
-              <a href="/data/sample_flipkart_returns.csv" download="sample_flipkart_returns.csv" class="btn-secondary-sm">
+              <a href="data/sample_flipkart_returns.xlsx" download="sample_flipkart_returns.xlsx" class="btn-secondary-sm">
+                <span>📊</span> Download Sample Excel (.xlsx)
+              </a>
+              <a href="data/sample_flipkart_returns.csv" download="sample_flipkart_returns.csv" class="btn-secondary-sm">
                 <span>📄</span> Download Sample CSV
               </a>
             </div>
@@ -470,6 +478,6 @@
   </div>
 
   <!-- Main Application Logic -->
-  <script src="/app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
