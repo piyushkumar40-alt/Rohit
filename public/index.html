@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#1e293b">
   <title>Flipkart Returns Tracker & Scanner</title>
-  <link rel="stylesheet" href="styles.css?v=2.0">
+  <link rel="stylesheet" href="styles.css?v=2.1">
   <!-- Offline QR generator for phone connection -->
   <script src="vendor/qrcode.js?v=2.0"></script>
   <!-- Local SheetJS Excel Parser -->
@@ -82,7 +82,20 @@
             <canvas id="camera-canvas" class="hidden"></canvas>
             
             <!-- Scanning Reticle Overlay -->
-            <div class="scanner-overlay" style="z-index: 2;">
+            <div class="scanner-overlay" id="scanner-touch-overlay" style="z-index: 2;">
+              <!-- Distance & Focus Helper Banner -->
+              <div class="focus-guide-pill" id="focus-guide-pill">
+                <span>📏</span> Hold 20–25 cm away. Tap [2x] for small codes
+              </div>
+
+              <!-- Quick Zoom Buttons Pill -->
+              <div class="zoom-controls-pill">
+                <button type="button" class="zoom-btn active" data-zoom="1">1x</button>
+                <button type="button" class="zoom-btn" data-zoom="1.5">1.5x</button>
+                <button type="button" class="zoom-btn" data-zoom="2">2x</button>
+                <button type="button" class="zoom-btn" data-zoom="3">3x</button>
+              </div>
+
               <div class="scanner-laser" id="scanner-laser"></div>
               <div class="reticle-box">
                 <div class="corner top-left"></div>
@@ -91,6 +104,7 @@
                 <div class="corner bottom-right"></div>
               </div>
               <p class="reticle-hint" id="scanner-hud-text">Point camera at QR code or Barcode</p>
+              <div id="tap-focus-ring" class="focus-ring hidden"></div>
             </div>
 
             <!-- Viewport Overlay Status (e.g. Camera Off / Error) -->
@@ -109,6 +123,9 @@
           <div class="camera-controls">
             <button id="btn-toggle-camera" class="btn-secondary" title="Start/Stop Camera">
               <span id="toggle-camera-icon">⏹️</span> Stop Camera
+            </button>
+            <button id="btn-refocus" class="btn-secondary" title="Tap to trigger camera auto-focus">
+              <span>🎯</span> Refocus
             </button>
             <button id="btn-switch-camera" class="btn-secondary" title="Switch Front/Back Camera">
               <span>🔄</span> Flip
@@ -483,6 +500,6 @@
   </div>
 
   <!-- Main Application Logic -->
-  <script src="app.js?v=2.0"></script>
+  <script src="app.js?v=2.1"></script>
 </body>
 </html>
