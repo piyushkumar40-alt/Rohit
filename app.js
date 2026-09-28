@@ -733,7 +733,7 @@
         }
 
         const qrConfig = {
-          fps: 15,
+          fps: 20,
           qrbox: (viewfinderWidth, viewfinderHeight) => {
             const minDim = Math.min(viewfinderWidth, viewfinderHeight);
             const edge = Math.floor(minDim * 0.85);
@@ -741,7 +741,13 @@
           },
           aspectRatio: 1.0,
           videoConstraints: {
-            facingMode: { ideal: state.currentFacingMode }
+            facingMode: { ideal: state.currentFacingMode },
+            width: { ideal: 1920, min: 1280 },
+            height: { ideal: 1080, min: 720 },
+            focusMode: "continuous",
+            advanced: [
+              { focusMode: "continuous" }
+            ]
           },
           experimentalFeatures: {
             useBarCodeDetectorIfSupported: false // False on iOS to prevent WebKit freeze
@@ -943,7 +949,61 @@
           dom.btnTorch.innerHTML = state.torchActive ? '<span>⚡</span> Torch ON' : '<span>💡</span> Torch';
         } catch (e) {}
       }
+  // Zoom & Refocus Controller
+  state.currentZoom = 1.0;
+
+  async function applyZoom(level) {
+    state.currentZoom = level;
+    // 1. Hardware digital zoom on track
+    if (html5QrScanner) {
+      try {
+        await html5QrScanner.applyVideoConstraints({
+          advanced: [{ zoom: level }]
+        });
+      } catch (e) {
+        // Hardware zoom unsupported on older WebKit, will use CSS scale
+      }
     }
+    // 2. CSS Magnification zoom on video viewport
+    const v = document.querySelector('#qr-reader video') || dom.cameraVideo;
+    if (v) {
+      v.style.transform = `scale(${level})`;
+      v.style.transformOrigin = 'center center';
+      v.style.transition = 'transform 0.2s ease-out';
+    }
+    // Update zoom pill UI
+    document.querySelectorAll('.zoom-btn').forEach(btn => {
+      btn.classList.toggle('active', parseFloat(btn.dataset.zoom) === level);
+    });
+    setScannerStatus(`Zoom: ${level}x | Hold 20–25cm away`, 'active');
+  }
+
+  async function triggerRefocus(x = null, y = null) {
+    setScannerStatus('Refocusing camera...', 'active');
+    const ring = document.getElementById('tap-focus-ring');
+    if (ring && x !== null && y !== null) {
+      ring.style.left = `${x}px`;
+      ring.style.top = `${y}px`;
+      ring.classList.remove('hidden', 'focused');
+      setTimeout(() => ring.classList.add('focused'), 200);
+      setTimeout(() => ring.classList.add('hidden'), 700);
+    }
+
+    if (html5QrScanner) {
+      try {
+        await html5QrScanner.applyVideoConstraints({
+          advanced: [{ focusMode: 'continuous' }]
+        });
+      } catch (e) {}
+    } else if (state.cameraStream) {
+      const track = state.cameraStream.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+        } catch (e) {}
+      }
+    }
+    setTimeout(() => setScannerStatus('Scanning for QR / Barcode...', 'active'), 500);
   }
 
   // Handle Photo / File snapshot scanning (Html5Qrcode.scanFile + jsQR dual analysis)
@@ -1044,6 +1104,32 @@
   });
   dom.btnSwitchCamera.addEventListener('click', switchCamera);
   dom.btnTorch.addEventListener('click', toggleTorch);
+
+  const btnRefocus = document.getElementById('btn-refocus');
+  if (btnRefocus) {
+    btnRefocus.addEventListener('click', () => triggerRefocus());
+  }
+
+  // Zoom button listeners
+  document.querySelectorAll('.zoom-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const z = parseFloat(btn.dataset.zoom) || 1.0;
+      applyZoom(z);
+    });
+  });
+
+  // Tap-to-focus on camera viewfinder
+  const touchOverlay = document.getElementById('scanner-touch-overlay');
+  if (touchOverlay) {
+    touchOverlay.addEventListener('click', (e) => {
+      if (e.target.closest('.zoom-btn') || e.target.closest('.zoom-controls-pill')) return;
+      const rect = touchOverlay.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      triggerRefocus(x, y);
+    });
+  }
 
   // Manual Tracking ID input handling
   dom.manualTrackingInput.addEventListener('input', () => {
