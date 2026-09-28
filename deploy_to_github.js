@@ -18,13 +18,25 @@ const FILES_TO_DEPLOY = [
   '.gitignore',
   'package.json',
   'start.bat',
+  '.github/workflows/deploy.yml',
+  'index.html',
+  'styles.css',
+  'app.js',
+  'vendor/qrcode.js',
+  'vendor/xlsx.full.min.js',
+  'vendor/zxing.min.js',
   'src/db.js',
   'src/server.js',
   'src/seed.js',
+  'src/seed_all.js',
   'public/index.html',
   'public/styles.css',
   'public/app.js',
   'public/vendor/qrcode.js',
+  'public/vendor/xlsx.full.min.js',
+  'public/vendor/zxing.min.js',
+  'public/data/sample_flipkart_returns.xlsx',
+  'public/data/sample_flipkart_returns.csv',
   'data/sample_flipkart_returns.csv',
   'test/test_db.js',
   'test/test_api.js',
@@ -72,8 +84,9 @@ function githubRequest(endpoint, method, payload = null) {
 }
 
 async function getFileSha(filePath) {
+  const cleanPath = filePath.replace(/\\/g, '/');
   try {
-    const res = await githubRequest(`/repos/${OWNER}/${REPO}/contents/${filePath}?ref=${BRANCH}`, 'GET');
+    const res = await githubRequest(`/repos/${OWNER}/${REPO}/contents/${cleanPath}?ref=${BRANCH}`, 'GET');
     return res.data ? res.data.sha : null;
   } catch (err) {
     // 404 means file doesn't exist yet
@@ -82,6 +95,7 @@ async function getFileSha(filePath) {
 }
 
 async function uploadFile(relPath) {
+  const cleanPath = relPath.replace(/\\/g, '/');
   const fullPath = path.join(__dirname, relPath);
   if (!fs.existsSync(fullPath)) {
     console.warn(`File ${relPath} not found, skipping.`);
@@ -90,10 +104,10 @@ async function uploadFile(relPath) {
 
   const fileContent = fs.readFileSync(fullPath);
   const base64Content = fileContent.toString('base64');
-  const existingSha = await getFileSha(relPath);
+  const existingSha = await getFileSha(cleanPath);
 
   const payload = {
-    message: existingSha ? `Update ${relPath}` : `Add ${relPath}`,
+    message: existingSha ? `Update ${cleanPath}` : `Add ${cleanPath}`,
     content: base64Content,
     branch: BRANCH
   };
@@ -101,9 +115,9 @@ async function uploadFile(relPath) {
     payload.sha = existingSha;
   }
 
-  console.log(`Uploading ${relPath}...`);
-  await githubRequest(`/repos/${OWNER}/${REPO}/contents/${relPath}`, 'PUT', payload);
-  console.log(`✓ ${relPath} deployed successfully.`);
+  console.log(`Uploading ${cleanPath}...`);
+  await githubRequest(`/repos/${OWNER}/${REPO}/contents/${cleanPath}`, 'PUT', payload);
+  console.log(`✓ ${cleanPath} deployed successfully.`);
 }
 
 async function run() {
