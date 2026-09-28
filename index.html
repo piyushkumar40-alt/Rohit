@@ -12,6 +12,8 @@
   <script src="vendor/qrcode.js"></script>
   <!-- Local SheetJS Excel Parser -->
   <script src="vendor/xlsx.full.min.js"></script>
+  <!-- Local jsQR (Ultra-reliable QR Code engine for iPhone / iOS Safari) -->
+  <script src="vendor/jsqr.js"></script>
   <!-- Local ZXing Barcode & QR Code Engine -->
   <script src="vendor/zxing.min.js"></script>
 </head>
@@ -73,7 +75,7 @@
         <!-- Live Camera Viewport -->
         <div class="scanner-card">
           <div class="camera-viewport-container" id="camera-container">
-            <video id="camera-video" playsinline muted autoplay></video>
+            <video id="camera-video" playsinline webkit-playsinline muted autoplay></video>
             <canvas id="camera-canvas" class="hidden"></canvas>
             
             <!-- Scanning Reticle Overlay -->
