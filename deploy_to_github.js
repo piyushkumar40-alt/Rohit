@@ -24,6 +24,7 @@ const FILES_TO_DEPLOY = [
   'app.js',
   'vendor/qrcode.js',
   'vendor/xlsx.full.min.js',
+  'vendor/jsqr.js',
   'vendor/zxing.min.js',
   'src/db.js',
   'src/server.js',
@@ -34,6 +35,7 @@ const FILES_TO_DEPLOY = [
   'public/app.js',
   'public/vendor/qrcode.js',
   'public/vendor/xlsx.full.min.js',
+  'public/vendor/jsqr.js',
   'public/vendor/zxing.min.js',
   'public/data/sample_flipkart_returns.xlsx',
   'public/data/sample_flipkart_returns.csv',
@@ -83,10 +85,10 @@ function githubRequest(endpoint, method, payload = null) {
   });
 }
 
-async function getFileSha(filePath) {
+async function getFileSha(filePath, branch) {
   const cleanPath = filePath.replace(/\\/g, '/');
   try {
-    const res = await githubRequest(`/repos/${OWNER}/${REPO}/contents/${cleanPath}?ref=${BRANCH}`, 'GET');
+    const res = await githubRequest(`/repos/${OWNER}/${REPO}/contents/${cleanPath}?ref=${branch}`, 'GET');
     return res.data ? res.data.sha : null;
   } catch (err) {
     // 404 means file doesn't exist yet
@@ -94,7 +96,7 @@ async function getFileSha(filePath) {
   }
 }
 
-async function uploadFile(relPath) {
+async function uploadFile(relPath, branch) {
   const cleanPath = relPath.replace(/\\/g, '/');
   const fullPath = path.join(__dirname, relPath);
   if (!fs.existsSync(fullPath)) {
@@ -104,39 +106,43 @@ async function uploadFile(relPath) {
 
   const fileContent = fs.readFileSync(fullPath);
   const base64Content = fileContent.toString('base64');
-  const existingSha = await getFileSha(cleanPath);
+  const existingSha = await getFileSha(cleanPath, branch);
 
   const payload = {
     message: existingSha ? `Update ${cleanPath}` : `Add ${cleanPath}`,
     content: base64Content,
-    branch: BRANCH
+    branch: branch
   };
   if (existingSha) {
     payload.sha = existingSha;
   }
 
-  console.log(`Uploading ${cleanPath}...`);
+  console.log(`Uploading ${cleanPath} [${branch}]...`);
   await githubRequest(`/repos/${OWNER}/${REPO}/contents/${cleanPath}`, 'PUT', payload);
-  console.log(`✓ ${cleanPath} deployed successfully.`);
+  console.log(`✓ ${cleanPath} [${branch}] deployed successfully.`);
 }
 
 async function run() {
   console.log(`\n======================================================`);
   console.log(` Deploying Rohit Flipkart Returns Tracker to GitHub`);
   console.log(` Repository: https://github.com/${OWNER}/${REPO}`);
-  console.log(` Branch:     ${BRANCH}`);
   console.log(`======================================================\n`);
 
-  for (const file of FILES_TO_DEPLOY) {
-    try {
-      await uploadFile(file);
-    } catch (err) {
-      console.error(`❌ Failed to deploy ${file}:`, err.message);
+  const branches = ['main', 'gh-pages'];
+  for (const branch of branches) {
+    console.log(`\n>>> Starting deployment for branch: ${branch}`);
+    for (const file of FILES_TO_DEPLOY) {
+      try {
+        await uploadFile(file, branch);
+      } catch (err) {
+        console.error(`❌ Failed to deploy ${file} on ${branch}:`, err.message);
+      }
     }
   }
 
-  console.log(`\n🎉 Deployment Complete!`);
-  console.log(`Repository URL: https://github.com/${OWNER}/${REPO}`);
+  console.log(`\n🎉 Deployment Complete on all branches!`);
+  console.log(`Repository URL:   https://github.com/${OWNER}/${REPO}`);
+  console.log(`GitHub Pages URL: https://${OWNER}.github.io/${REPO}/`);
 }
 
 run();
