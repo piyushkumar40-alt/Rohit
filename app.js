@@ -657,10 +657,21 @@
 
   // Offscreen sampling canvas for iOS Safari and mobile frame capture
   const scanCanvas = document.createElement('canvas');
-  const scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
-  let lastScanFrameTime = 0;
-  let isFrameProcessing = false;
-  const FRAME_SAMPLE_INTERVAL_MS = 60; // 16 FPS sample rate - responsive & battery friendly
+  // Scanner Engine - Dual Powered: Html5Qrcode (Mobile / iOS primary) + jsQR / ZXing (fallback)
+  let html5QrScanner = null;
+
+  function setScannerStatus(msg, type = 'active') {
+    const hint = document.getElementById('scanner-hud-text');
+    if (!hint) return;
+    hint.textContent = msg;
+    if (type === 'success') {
+      hint.style.color = '#4ade80';
+    } else if (type === 'error') {
+      hint.style.color = '#f87171';
+    } else {
+      hint.style.color = '#94a3b8';
+    }
+  }
 
   async function startCamera() {
     try {
@@ -700,81 +711,93 @@
         throw new Error('Camera device not detected or camera streaming is not supported by your browser.');
       }
 
-      // Explicitly set iOS Safari attributes on video element
-      dom.cameraVideo.setAttribute('playsinline', 'true');
-      dom.cameraVideo.setAttribute('webkit-playsinline', 'true');
-      dom.cameraVideo.setAttribute('muted', 'true');
-      dom.cameraVideo.setAttribute('autoplay', 'true');
-      dom.cameraVideo.playsInline = true;
-      dom.cameraVideo.muted = true;
-      dom.cameraVideo.autoplay = true;
-
-      // Stream acquisition with automatic fallback for iOS Safari camera constraints
-      let stream = null;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: state.currentFacingMode },
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-          },
-          audio: false
-        });
-      } catch (cErr) {
-        console.warn('Ideal constraints failed, attempting fallback constraints:', cErr);
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: state.currentFacingMode },
-          audio: false
-        });
-      }
-
-      state.cameraStream = stream;
-      dom.cameraVideo.srcObject = stream;
-
-      // Wait for iOS Safari to finish metadata & frame sizing before playing
-      await new Promise(resolve => {
-        if (dom.cameraVideo.readyState >= 2 && dom.cameraVideo.videoWidth > 0) {
-          resolve();
-        } else {
-          const onReady = () => {
-            dom.cameraVideo.removeEventListener('loadedmetadata', onReady);
-            dom.cameraVideo.removeEventListener('canplay', onReady);
-            resolve();
-          };
-          dom.cameraVideo.addEventListener('loadedmetadata', onReady);
-          dom.cameraVideo.addEventListener('canplay', onReady);
-          setTimeout(resolve, 800); // 800ms safety timeout
-        }
-      });
-
-      try {
-        await dom.cameraVideo.play();
-      } catch (playErr) {
-        console.warn('Video play caught:', playErr);
-      }
-
-      // UI updates
+      // Hide placeholder and update buttons
       dom.cameraPlaceholder.classList.add('hidden');
       dom.toggleCameraIcon.textContent = '⏹️';
       dom.btnToggleCamera.innerHTML = `<span>⏹️</span> Stop Camera`;
+      setScannerStatus('Starting camera stream...', 'active');
 
-      // Check flashlight/torch capability
-      checkTorchSupport(stream);
+      // Primary Engine: Html5Qrcode
+      if (typeof Html5Qrcode !== 'undefined') {
+        if (!html5QrScanner) {
+          html5QrScanner = new Html5Qrcode("qr-reader", {
+            verbose: false,
+            formatsToSupport: [
+              Html5QrcodeSupportedFormats.QR_CODE,
+              Html5QrcodeSupportedFormats.CODE_128,
+              Html5QrcodeSupportedFormats.CODE_39,
+              Html5QrcodeSupportedFormats.EAN_13,
+              Html5QrcodeSupportedFormats.UPC_A
+            ]
+          });
+        }
 
-      // Start unified camera frame scanning loop (jsQR + ZXing + BarcodeDetector)
-      state.scanLoopActive = true;
-      lastScanFrameTime = 0;
-      requestAnimationFrame(scanVideoFrame);
+        const qrConfig = {
+          fps: 15,
+          qrbox: (viewfinderWidth, viewfinderHeight) => {
+            const minDim = Math.min(viewfinderWidth, viewfinderHeight);
+            const edge = Math.floor(minDim * 0.85);
+            return { width: edge, height: edge };
+          },
+          aspectRatio: 1.0,
+          videoConstraints: {
+            facingMode: { ideal: state.currentFacingMode }
+          },
+          experimentalFeatures: {
+            useBarCodeDetectorIfSupported: false // False on iOS to prevent WebKit freeze
+          }
+        };
+
+        await html5QrScanner.start(
+          { facingMode: state.currentFacingMode },
+          qrConfig,
+          (decodedText, decodedResult) => {
+            setScannerStatus(`✅ Scanned: ${decodedText}`, 'success');
+            const cleanId = extractTrackingId(decodedText);
+            handleDetectedCode(cleanId);
+          },
+          (errorMessage) => {
+            // Normal scan frame without barcode
+            setScannerStatus('Point camera at QR code or Barcode', 'active');
+          }
+        );
+
+        state.scanLoopActive = true;
+
+        // Check torch capabilities
+        try {
+          const track = html5QrScanner.getRunningTrackCameraCapabilities();
+          if (track && track.torchFeature && track.torchFeature().isSupported()) {
+            dom.btnTorch.classList.remove('hidden');
+          }
+        } catch (tErr) {}
+
+      } else {
+        // Direct WebCam & jsQR fallback
+        await startCameraDirect();
+      }
 
     } catch (err) {
       console.error('Camera Start Error:', err);
+      // If Html5Qrcode failed (e.g. constraints error), try direct fallback
+      if (typeof Html5Qrcode !== 'undefined' && !state.scanLoopActive) {
+        try {
+          console.log('Attempting direct camera fallback...');
+          await startCameraDirect();
+          return;
+        } catch (fallbackErr) {
+          console.error('Direct fallback also failed:', fallbackErr);
+        }
+      }
+
       dom.cameraPlaceholder.classList.remove('hidden');
+      setScannerStatus('Camera access error', 'error');
       dom.cameraStatusText.innerHTML = `
         <div style="padding:10px; max-width:320px; margin:0 auto; text-align:center;">
           <div style="font-size:2rem; margin-bottom:4px;">📷</div>
           <h4 style="color:#f87171; font-size:1.05rem; margin-bottom:6px;">Camera Access Blocked</h4>
           <p style="font-size:0.82rem; color:#94a3b8; margin-bottom:12px; line-height:1.4;">
-            ${err.name === 'NotAllowedError' ? 'Camera permission was denied. Please allow camera access in browser site settings.' : err.message}
+            ${err.name === 'NotAllowedError' ? 'Camera permission was denied. Please allow camera access in browser site settings.' : (err.message || 'Unable to start camera stream.')}
           </p>
           <button type="button" class="btn-accent" onclick="document.getElementById('file-photo-input').click()" style="width:100%; justify-content:center;">
             <span>📸</span> Snap Photo / Upload Image
@@ -784,166 +807,174 @@
     }
   }
 
-  function stopCamera() {
+  // Direct getUserMedia + Canvas + jsQR Fallback Engine
+  async function startCameraDirect() {
+    dom.cameraVideo.style.display = 'block';
+    dom.cameraVideo.setAttribute('playsinline', 'true');
+    dom.cameraVideo.setAttribute('webkit-playsinline', 'true');
+    dom.cameraVideo.setAttribute('muted', 'true');
+    dom.cameraVideo.setAttribute('autoplay', 'true');
+    dom.cameraVideo.playsInline = true;
+    dom.cameraVideo.muted = true;
+    dom.cameraVideo.autoplay = true;
+
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: state.currentFacingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+    } catch (e) {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: state.currentFacingMode },
+        audio: false
+      });
+    }
+
+    state.cameraStream = stream;
+    dom.cameraVideo.srcObject = stream;
+
+    await new Promise(resolve => {
+      if (dom.cameraVideo.videoWidth > 0) {
+        resolve();
+      } else {
+        const onReady = () => {
+          dom.cameraVideo.removeEventListener('loadedmetadata', onReady);
+          dom.cameraVideo.removeEventListener('canplay', onReady);
+          resolve();
+        };
+        dom.cameraVideo.addEventListener('loadedmetadata', onReady);
+        dom.cameraVideo.addEventListener('canplay', onReady);
+        setTimeout(resolve, 800);
+      }
+    });
+
+    try { await dom.cameraVideo.play(); } catch (e) {}
+
+    dom.cameraPlaceholder.classList.add('hidden');
+    dom.toggleCameraIcon.textContent = '⏹️';
+    dom.btnToggleCamera.innerHTML = `<span>⏹️</span> Stop Camera`;
+
+    state.scanLoopActive = true;
+    requestAnimationFrame(scanDirectFrame);
+  }
+
+  async function scanDirectFrame(timestamp) {
+    if (!state.scanLoopActive) return;
+
+    if (dom.cameraVideo && !dom.cameraVideo.paused && dom.cameraVideo.videoWidth > 0 && dom.cameraVideo.videoHeight > 0) {
+      const vWidth = dom.cameraVideo.videoWidth;
+      const vHeight = dom.cameraVideo.videoHeight;
+      const canvas = dom.cameraCanvas;
+      if (canvas.width !== vWidth || canvas.height !== vHeight) {
+        canvas.width = vWidth;
+        canvas.height = vHeight;
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(dom.cameraVideo, 0, 0, vWidth, vHeight);
+      const imgData = ctx.getImageData(0, 0, vWidth, vHeight);
+
+      let found = null;
+      if (typeof jsQR !== 'undefined') {
+        const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
+        if (qr && qr.data && qr.data.trim()) {
+          found = qr.data.trim();
+        }
+      }
+
+      if (found) {
+        const cleanId = extractTrackingId(found);
+        setScannerStatus(`✅ Scanned: ${cleanId}`, 'success');
+        handleDetectedCode(cleanId);
+      }
+    }
+
+    if (state.scanLoopActive) {
+      requestAnimationFrame(scanDirectFrame);
+    }
+  }
+
+  async function stopCamera() {
     state.scanLoopActive = false;
-    if (zxingReader) {
+    if (html5QrScanner) {
       try {
-        zxingReader.reset();
-      } catch (e) {}
+        await html5QrScanner.stop();
+      } catch (e) {
+        console.warn('Html5Qrcode stop:', e);
+      }
     }
     if (state.cameraStream) {
       state.cameraStream.getTracks().forEach(track => track.stop());
       state.cameraStream = null;
     }
     dom.cameraVideo.srcObject = null;
+    dom.cameraVideo.style.display = 'none';
     dom.cameraPlaceholder.classList.remove('hidden');
     dom.cameraStatusText.textContent = 'Camera stopped';
     dom.btnToggleCamera.innerHTML = `<span>▶️</span> Start Camera`;
     dom.btnTorch.classList.add('hidden');
-  }
-
-  function checkTorchSupport(stream) {
-    const videoTrack = stream.getVideoTracks()[0];
-    if (videoTrack && typeof videoTrack.getCapabilities === 'function') {
-      const capabilities = videoTrack.getCapabilities();
-      if (capabilities.torch) {
-        dom.btnTorch.classList.remove('hidden');
-      } else {
-        dom.btnTorch.classList.add('hidden');
-      }
-    }
-  }
-
-  async function toggleTorch() {
-    if (!state.cameraStream) return;
-    const videoTrack = state.cameraStream.getVideoTracks()[0];
-    if (videoTrack) {
-      state.torchActive = !state.torchActive;
-      try {
-        await videoTrack.applyConstraints({
-          advanced: [{ torch: state.torchActive }]
-        });
-        dom.btnTorch.innerHTML = state.torchActive ? '<span>⚡</span> Torch ON' : '<span>💡</span> Torch';
-      } catch (e) {
-        console.warn('Torch constraint error:', e);
-      }
-    }
+    setScannerStatus('Camera stopped', 'idle');
   }
 
   async function switchCamera() {
     state.currentFacingMode = state.currentFacingMode === 'environment' ? 'user' : 'environment';
-    if (state.cameraStream) {
-      stopCamera();
+    if (state.scanLoopActive) {
+      await stopCamera();
       await startCamera();
     }
   }
 
-  // Real-time video frame scanning loop powered by jsQR (for iPhone) & ZXing (for Barcodes)
-  async function scanVideoFrame(timestamp) {
-    if (!state.scanLoopActive) return;
-
-    if (!isFrameProcessing && (timestamp - lastScanFrameTime >= FRAME_SAMPLE_INTERVAL_MS)) {
-      lastScanFrameTime = timestamp;
-
-      if (dom.cameraVideo && dom.cameraVideo.readyState >= 2 && dom.cameraVideo.videoWidth > 0 && dom.cameraVideo.videoHeight > 0) {
-        isFrameProcessing = true;
-        try {
-          const vWidth = dom.cameraVideo.videoWidth;
-          const vHeight = dom.cameraVideo.videoHeight;
-
-          // Downscale to max 640px to ensure instant (<10ms) jsQR decoding on iPhone
-          const maxDim = 640;
-          let targetW = vWidth;
-          let targetH = vHeight;
-          if (targetW > maxDim || targetH > maxDim) {
-            if (targetW > targetH) {
-              targetH = Math.round((targetH * maxDim) / targetW);
-              targetW = maxDim;
-            } else {
-              targetW = Math.round((targetW * maxDim) / targetH);
-              targetH = maxDim;
-            }
-          }
-
-          if (scanCanvas.width !== targetW || scanCanvas.height !== targetH) {
-            scanCanvas.width = targetW;
-            scanCanvas.height = targetH;
-          }
-
-          scanCtx.drawImage(dom.cameraVideo, 0, 0, targetW, targetH);
-          const imageData = scanCtx.getImageData(0, 0, targetW, targetH);
-
-          let detectedRaw = null;
-
-          // 1. ENGINE 1: jsQR (Gold standard for QR codes on iPhone & iOS Safari)
-          if (typeof jsQR !== 'undefined') {
-            try {
-              const qr = jsQR(imageData.data, imageData.width, imageData.height, {
-                inversionAttempts: 'attemptBoth'
-              });
-              if (qr && qr.data && qr.data.trim()) {
-                detectedRaw = qr.data.trim();
-              }
-            } catch (e) {
-              // Frame decoding error ignored
-            }
-          }
-
-          // 2. ENGINE 2: Native BarcodeDetector (Chrome/Android/Desktop)
-          if (!detectedRaw && state.barcodeDetector) {
-            try {
-              const barcodes = await state.barcodeDetector.detect(scanCanvas);
-              if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
-                detectedRaw = barcodes[0].rawValue.trim();
-              }
-            } catch (e) {}
-          }
-
-          // 3. ENGINE 3: ZXing for 1D Barcodes (Code 128, EAN, UPC, Code 39)
-          if (!detectedRaw && typeof ZXing !== 'undefined') {
-            try {
-              const reader = getZxingReader();
-              if (reader) {
-                const zxResult = await reader.decode(scanCanvas);
-                if (zxResult && zxResult.getText()) {
-                  detectedRaw = zxResult.getText().trim();
-                }
-              }
-            } catch (e) {
-              // ZXing NotFoundException on blank frames - normal behavior
-            }
-          }
-
-          if (detectedRaw) {
-            const cleanId = extractTrackingId(detectedRaw);
-            handleDetectedCode(cleanId);
-          }
-        } catch (err) {
-          // Frame error guard
-        } finally {
-          isFrameProcessing = false;
-        }
+  async function toggleTorch() {
+    state.torchActive = !state.torchActive;
+    if (html5QrScanner) {
+      try {
+        await html5QrScanner.applyVideoConstraints({
+          advanced: [{ torch: state.torchActive }]
+        });
+        dom.btnTorch.innerHTML = state.torchActive ? '<span>⚡</span> Torch ON' : '<span>💡</span> Torch';
+      } catch (e) {
+        console.warn('Torch toggle error:', e);
       }
-    }
-
-    if (state.scanLoopActive) {
-      requestAnimationFrame(scanVideoFrame);
+    } else if (state.cameraStream) {
+      const track = state.cameraStream.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({ advanced: [{ torch: state.torchActive }] });
+          dom.btnTorch.innerHTML = state.torchActive ? '<span>⚡</span> Torch ON' : '<span>💡</span> Torch';
+        } catch (e) {}
+      }
     }
   }
 
-  // Handle Photo / File snapshot scanning (Full resolution jsQR + ZXing analysis)
+  // Handle Photo / File snapshot scanning (Html5Qrcode.scanFile + jsQR dual analysis)
   dom.filePhotoInput.addEventListener('change', async (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
 
     try {
-      const img = new Image();
-      img.onload = async () => {
-        let detectedText = null;
+      setScannerStatus('Analyzing photo...', 'active');
+      let detectedText = null;
 
-        // Render photo to offscreen canvas
+      // 1. Try Html5Qrcode.scanFile
+      if (typeof Html5Qrcode !== 'undefined') {
+        try {
+          const scannerInstance = html5QrScanner || new Html5Qrcode("qr-reader");
+          detectedText = await scannerInstance.scanFile(file, false);
+        } catch (hErr) {
+          console.warn('Html5Qrcode file scan notice:', hErr);
+        }
+      }
+
+      // 2. Try jsQR on canvas
+      if (!detectedText && typeof jsQR !== 'undefined') {
+        const img = new Image();
+        await new Promise((res, rej) => {
+          img.onload = res;
+          img.onerror = rej;
+          img.src = URL.createObjectURL(file);
+        });
         const pCanvas = document.createElement('canvas');
-        const pCtx = pCanvas.getContext('2d', { willReadFrequently: true });
+        const pCtx = pCanvas.getContext('2d');
         let w = img.naturalWidth || img.width;
         let h = img.naturalHeight || img.height;
         const maxDim = 1200;
@@ -960,51 +991,20 @@
         pCanvas.height = h;
         pCtx.drawImage(img, 0, 0, w, h);
         const imgData = pCtx.getImageData(0, 0, w, h);
-
-        // 1. Try jsQR first (Ultra-reliable for iPhone QR codes)
-        if (typeof jsQR !== 'undefined') {
-          try {
-            const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
-            if (qr && qr.data && qr.data.trim()) {
-              detectedText = qr.data.trim();
-            }
-          } catch (e) {}
+        const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
+        if (qr && qr.data && qr.data.trim()) {
+          detectedText = qr.data.trim();
         }
+      }
 
-        // 2. Try ZXing
-        if (!detectedText && typeof ZXing !== 'undefined') {
-          try {
-            const reader = getZxingReader();
-            if (reader) {
-              const zxResult = await reader.decode(pCanvas);
-              if (zxResult && zxResult.getText()) {
-                detectedText = zxResult.getText().trim();
-              }
-            }
-          } catch (e) {}
-        }
-
-        // 3. Try Native BarcodeDetector
-        if (!detectedText) {
-          if (!state.barcodeDetector) await initBarcodeDetector();
-          if (state.barcodeDetector) {
-            try {
-              const barcodes = await state.barcodeDetector.detect(pCanvas);
-              if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
-                detectedText = barcodes[0].rawValue.trim();
-              }
-            } catch (err) {}
-          }
-        }
-
-        if (detectedText) {
-          const cleanId = extractTrackingId(detectedText);
-          handleDetectedCode(cleanId);
-        } else {
-          alert('No barcode or QR code detected in the photo. Please ensure good lighting and a clear picture of the shipping label.');
-        }
-      };
-      img.src = URL.createObjectURL(file);
+      if (detectedText) {
+        const cleanId = extractTrackingId(detectedText);
+        setScannerStatus(`✅ Scanned: ${cleanId}`, 'success');
+        handleDetectedCode(cleanId);
+      } else {
+        setScannerStatus('No code detected in photo', 'error');
+        alert('No barcode or QR code detected. Please ensure clear lighting and take a close-up photo of the shipping label.');
+      }
     } catch (err) {
       alert('Failed to process image: ' + err.message);
     }
