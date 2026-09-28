@@ -422,6 +422,28 @@ button {
   object-fit: cover;
 }
 
+#qr-reader {
+  width: 100% !important;
+  height: 100% !important;
+  border: none !important;
+  background: #000;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+#qr-reader video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  border-radius: var(--radius-md);
+}
+
+#qr-reader img[alt="Info icon"],
+#qr-reader #qr-shaded-region {
+  display: none !important;
+}
+
 /* Viewport Overlay & Reticle */
 .scanner-overlay {
   position: absolute;
