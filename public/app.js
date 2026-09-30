@@ -376,6 +376,7 @@
     btnCopyUrl: document.getElementById('btn-copy-url'),
 
     // Scanner Elements
+    qrReader: document.getElementById('qr-reader'),
     cameraVideo: document.getElementById('camera-video'),
     cameraCanvas: document.getElementById('camera-canvas'),
     cameraPlaceholder: document.getElementById('camera-placeholder'),
@@ -732,6 +733,13 @@
           });
         }
 
+        if (html5QrScanner.isScanning) {
+          try { await html5QrScanner.stop(); } catch (e) {}
+        }
+
+        if (dom.qrReader) dom.qrReader.style.display = 'block';
+        if (dom.cameraVideo) dom.cameraVideo.style.display = 'none';
+
         const qrConfig = {
           fps: 20,
           qrbox: (viewfinderWidth, viewfinderHeight) => {
@@ -742,24 +750,44 @@
           aspectRatio: 1.0,
           videoConstraints: {
             facingMode: { ideal: state.currentFacingMode },
-            width: { ideal: 1920, min: 1280 },
-            height: { ideal: 1080, min: 720 },
-            focusMode: "continuous",
-            advanced: [
-              { focusMode: "continuous" }
-            ]
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
           },
           experimentalFeatures: {
             useBarCodeDetectorIfSupported: false // False on iOS to prevent WebKit freeze
           }
         };
 
+        // Determine best camera configuration
+        let cameraIdOrConfig = { facingMode: state.currentFacingMode };
+        try {
+          const devices = await Html5Qrcode.getCameras();
+          if (devices && devices.length > 0) {
+            if (devices.length === 1) {
+              // Single camera device (laptop/desktop webcam)
+              cameraIdOrConfig = devices[0].id;
+            } else {
+              // Multi-camera device (e.g. mobile phone)
+              const isEnv = state.currentFacingMode === 'environment';
+              const preferred = devices.find(d => {
+                const label = (d.label || '').toLowerCase();
+                return isEnv
+                  ? (label.includes('back') || label.includes('rear') || label.includes('environment'))
+                  : (label.includes('front') || label.includes('user') || label.includes('facing front'));
+              });
+              cameraIdOrConfig = preferred ? preferred.id : (isEnv ? devices[devices.length - 1].id : devices[0].id);
+            }
+          }
+        } catch (camErr) {
+          console.warn('Html5Qrcode.getCameras notice:', camErr);
+        }
+
         await html5QrScanner.start(
-          { facingMode: state.currentFacingMode },
+          cameraIdOrConfig,
           qrConfig,
           (decodedText, decodedResult) => {
-            setScannerStatus(`✅ Scanned: ${decodedText}`, 'success');
             const cleanId = extractTrackingId(decodedText);
+            setScannerStatus(`✅ Scanned: ${cleanId}`, 'success');
             handleDetectedCode(cleanId);
           },
           (errorMessage) => {
@@ -786,7 +814,7 @@
     } catch (err) {
       console.error('Camera Start Error:', err);
       // If Html5Qrcode failed (e.g. constraints error), try direct fallback
-      if (typeof Html5Qrcode !== 'undefined' && !state.scanLoopActive) {
+      if (!state.scanLoopActive) {
         try {
           console.log('Attempting direct camera fallback...');
           await startCameraDirect();
@@ -813,8 +841,9 @@
     }
   }
 
-  // Direct getUserMedia + Canvas + jsQR Fallback Engine
+  // Direct getUserMedia + Canvas + jsQR / BarcodeDetector / ZXing Fallback Engine
   async function startCameraDirect() {
+    if (dom.qrReader) dom.qrReader.style.display = 'none';
     dom.cameraVideo.style.display = 'block';
     dom.cameraVideo.setAttribute('playsinline', 'true');
     dom.cameraVideo.setAttribute('webkit-playsinline', 'true');
@@ -830,11 +859,18 @@
         video: { facingMode: { ideal: state.currentFacingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false
       });
-    } catch (e) {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: state.currentFacingMode },
-        audio: false
-      });
+    } catch (e1) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: state.currentFacingMode } },
+          audio: false
+        });
+      } catch (e2) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
+        });
+      }
     }
 
     state.cameraStream = stream;
@@ -861,6 +897,14 @@
     dom.toggleCameraIcon.textContent = '⏹️';
     dom.btnToggleCamera.innerHTML = `<span>⏹️</span> Stop Camera`;
 
+    try {
+      const track = stream.getVideoTracks()[0];
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.torch) {
+        dom.btnTorch.classList.remove('hidden');
+      }
+    } catch (e) {}
+
     state.scanLoopActive = true;
     requestAnimationFrame(scanDirectFrame);
   }
@@ -876,16 +920,41 @@
         canvas.width = vWidth;
         canvas.height = vHeight;
       }
-      const ctx = canvas.getContext('2d');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(dom.cameraVideo, 0, 0, vWidth, vHeight);
       const imgData = ctx.getImageData(0, 0, vWidth, vHeight);
 
       let found = null;
-      if (typeof jsQR !== 'undefined') {
+
+      // 1. Native BarcodeDetector (fastest, supports QR, Code 128, Code 39, EAN, UPC)
+      if (!found && state.barcodeDetector) {
+        try {
+          const barcodes = await state.barcodeDetector.detect(canvas);
+          if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+            found = barcodes[0].rawValue.trim();
+          }
+        } catch (bErr) {}
+      }
+
+      // 2. jsQR (robust QR engine)
+      if (!found && typeof jsQR !== 'undefined') {
         const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
         if (qr && qr.data && qr.data.trim()) {
           found = qr.data.trim();
         }
+      }
+
+      // 3. ZXing fallback (handles 1D barcodes and QR)
+      if (!found && typeof ZXing !== 'undefined') {
+        try {
+          const reader = getZxingReader();
+          if (reader && reader.decodeFromCanvas) {
+            const zxRes = reader.decodeFromCanvas(canvas);
+            if (zxRes && zxRes.getText()) {
+              found = zxRes.getText().trim();
+            }
+          }
+        } catch (zErr) {}
       }
 
       if (found) {
@@ -902,9 +971,12 @@
 
   async function stopCamera() {
     state.scanLoopActive = false;
+    state.torchActive = false;
     if (html5QrScanner) {
       try {
-        await html5QrScanner.stop();
+        if (html5QrScanner.isScanning) {
+          await html5QrScanner.stop();
+        }
       } catch (e) {
         console.warn('Html5Qrcode stop:', e);
       }
@@ -913,12 +985,19 @@
       state.cameraStream.getTracks().forEach(track => track.stop());
       state.cameraStream = null;
     }
-    dom.cameraVideo.srcObject = null;
-    dom.cameraVideo.style.display = 'none';
+    if (dom.cameraVideo) {
+      dom.cameraVideo.srcObject = null;
+      dom.cameraVideo.style.display = 'none';
+    }
+    if (dom.qrReader) {
+      dom.qrReader.style.display = 'none';
+    }
     dom.cameraPlaceholder.classList.remove('hidden');
     dom.cameraStatusText.textContent = 'Camera stopped';
+    dom.toggleCameraIcon.textContent = '▶️';
     dom.btnToggleCamera.innerHTML = `<span>▶️</span> Start Camera`;
     dom.btnTorch.classList.add('hidden');
+    dom.btnTorch.innerHTML = `<span>💡</span> Torch`;
     setScannerStatus('Camera stopped', 'idle');
   }
 
@@ -932,7 +1011,7 @@
 
   async function toggleTorch() {
     state.torchActive = !state.torchActive;
-    if (html5QrScanner) {
+    if (html5QrScanner && html5QrScanner.isScanning) {
       try {
         await html5QrScanner.applyVideoConstraints({
           advanced: [{ torch: state.torchActive }]
@@ -949,6 +1028,8 @@
           dom.btnTorch.innerHTML = state.torchActive ? '<span>⚡</span> Torch ON' : '<span>💡</span> Torch';
         } catch (e) {}
       }
+    }
+  }
   // Zoom & Refocus Controller
   state.currentZoom = 1.0;
 
@@ -1096,7 +1177,7 @@
   });
   dom.btnToggleCamera.addEventListener('click', () => {
     getAudioContext();
-    if (state.cameraStream) {
+    if (state.scanLoopActive || state.cameraStream || (html5QrScanner && html5QrScanner.isScanning)) {
       stopCamera();
     } else {
       startCamera();
