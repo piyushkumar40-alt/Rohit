@@ -619,7 +619,7 @@
       try {
         const supportedFormats = await BarcodeDetector.getSupportedFormats();
         state.barcodeDetector = new BarcodeDetector({
-          formats: supportedFormats.length ? supportedFormats : ['qr_code', 'code_128', 'code_39', 'ean_13', 'upc_a']
+          formats: supportedFormats.length ? supportedFormats : ['data_matrix', 'qr_code', 'code_128', 'code_39', 'code_93', 'ean_13', 'ean_8', 'pdf417', 'upc_a', 'upc_e', 'itf', 'aztec']
         });
         return true;
       } catch (e) {
@@ -629,7 +629,7 @@
     return false;
   }
 
-  // Helper to extract clean tracking ID from complex QR codes or logistics URLs
+  // Helper to extract clean tracking ID from complex QR codes, Data Matrix or logistics URLs
   function extractTrackingId(raw) {
     if (!raw) return '';
     let str = String(raw).trim();
@@ -644,11 +644,11 @@
         }
       } catch (e) {}
     }
-    // 2. If barcode/QR contains pipe or tab delimiter (e.g., FMPP009812451|OD309182390123)
-    if (str.includes('|') || str.includes('\t') || str.includes(',')) {
-      const tokens = str.split(/[|\t,]/).map(t => t.trim()).filter(Boolean);
+    // 2. If barcode/DataMatrix contains pipe, tab, comma, or newline delimiter (e.g., FMPP009812451|OD309182390123)
+    if (str.includes('|') || str.includes('\t') || str.includes(',') || str.includes('\n')) {
+      const tokens = str.split(/[|\t,\r\n]/).map(t => t.trim()).filter(Boolean);
       for (const tok of tokens) {
-        if (/^FMP/i.test(tok) || /^OD/i.test(tok) || tok.length >= 8) {
+        if (/^FMP/i.test(tok) || /^OD/i.test(tok) || /^\d{10,}/.test(tok) || tok.length >= 8) {
           return tok;
         }
       }
@@ -720,16 +720,25 @@
 
       // Primary Engine: Html5Qrcode
       if (typeof Html5Qrcode !== 'undefined') {
+        const supportedFormats = [
+          Html5QrcodeSupportedFormats.DATA_MATRIX,
+          Html5QrcodeSupportedFormats.QR_CODE,
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.CODE_93,
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.PDF_417,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E,
+          Html5QrcodeSupportedFormats.AZTEC,
+          Html5QrcodeSupportedFormats.ITF
+        ];
+
         if (!html5QrScanner) {
           html5QrScanner = new Html5Qrcode("qr-reader", {
             verbose: false,
-            formatsToSupport: [
-              Html5QrcodeSupportedFormats.QR_CODE,
-              Html5QrcodeSupportedFormats.CODE_128,
-              Html5QrcodeSupportedFormats.CODE_39,
-              Html5QrcodeSupportedFormats.EAN_13,
-              Html5QrcodeSupportedFormats.UPC_A
-            ]
+            formatsToSupport: supportedFormats
           });
         }
 
@@ -740,18 +749,17 @@
         if (dom.qrReader) dom.qrReader.style.display = 'block';
         if (dom.cameraVideo) dom.cameraVideo.style.display = 'none';
 
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+                      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
         const qrConfig = {
-          fps: 20,
+          fps: 15,
           qrbox: (viewfinderWidth, viewfinderHeight) => {
             const minDim = Math.min(viewfinderWidth, viewfinderHeight);
-            const edge = Math.floor(minDim * 0.85);
-            return { width: edge, height: edge };
-          },
-          aspectRatio: 1.0,
-          videoConstraints: {
-            facingMode: { ideal: state.currentFacingMode },
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
+            return {
+              width: Math.floor(viewfinderWidth * 0.94),
+              height: Math.floor(Math.max(minDim * 0.90, 260))
+            };
           },
           experimentalFeatures: {
             useBarCodeDetectorIfSupported: false // False on iOS to prevent WebKit freeze
@@ -759,27 +767,34 @@
         };
 
         // Determine best camera configuration
-        let cameraIdOrConfig = { facingMode: state.currentFacingMode };
-        try {
-          const devices = await Html5Qrcode.getCameras();
-          if (devices && devices.length > 0) {
-            if (devices.length === 1) {
-              // Single camera device (laptop/desktop webcam)
-              cameraIdOrConfig = devices[0].id;
-            } else {
-              // Multi-camera device (e.g. mobile phone)
-              const isEnv = state.currentFacingMode === 'environment';
-              const preferred = devices.find(d => {
-                const label = (d.label || '').toLowerCase();
-                return isEnv
-                  ? (label.includes('back') || label.includes('rear') || label.includes('environment'))
-                  : (label.includes('front') || label.includes('user') || label.includes('facing front'));
-              });
-              cameraIdOrConfig = preferred ? preferred.id : (isEnv ? devices[devices.length - 1].id : devices[0].id);
+        let cameraIdOrConfig;
+        if (isIOS) {
+          // On iOS WebKit (Safari & Chrome), facingMode: "environment" selects the main 1x rear camera.
+          // Passing deviceId on iOS often picks the fixed-focus Ultra-Wide lens (blurry at close range).
+          cameraIdOrConfig = { facingMode: state.currentFacingMode };
+        } else {
+          cameraIdOrConfig = { facingMode: state.currentFacingMode };
+          try {
+            const devices = await Html5Qrcode.getCameras();
+            if (devices && devices.length > 0) {
+              if (devices.length === 1) {
+                // Single camera device (laptop/desktop webcam)
+                cameraIdOrConfig = devices[0].id;
+              } else {
+                // Multi-camera device (e.g. mobile phone)
+                const isEnv = state.currentFacingMode === 'environment';
+                const preferred = devices.find(d => {
+                  const label = (d.label || '').toLowerCase();
+                  return isEnv
+                    ? (label.includes('back') || label.includes('rear') || label.includes('environment'))
+                    : (label.includes('front') || label.includes('user') || label.includes('facing front'));
+                });
+                cameraIdOrConfig = preferred ? preferred.id : (isEnv ? devices[devices.length - 1].id : devices[0].id);
+              }
             }
+          } catch (camErr) {
+            console.warn('Html5Qrcode.getCameras notice:', camErr);
           }
-        } catch (camErr) {
-          console.warn('Html5Qrcode.getCameras notice:', camErr);
         }
 
         await html5QrScanner.start(
@@ -792,7 +807,7 @@
           },
           (errorMessage) => {
             // Normal scan frame without barcode
-            setScannerStatus('Point camera at QR code or Barcode', 'active');
+            setScannerStatus('Point camera at Data Matrix or Barcode', 'active');
           }
         );
 
@@ -853,16 +868,21 @@
     dom.cameraVideo.muted = true;
     dom.cameraVideo.autoplay = true;
 
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+                  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
     let stream = null;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: state.currentFacingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: isIOS 
+          ? { facingMode: state.currentFacingMode }
+          : { facingMode: { ideal: state.currentFacingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false
       });
     } catch (e1) {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: state.currentFacingMode } },
+          video: { facingMode: state.currentFacingMode },
           audio: false
         });
       } catch (e2) {
@@ -921,12 +941,21 @@
         canvas.height = vHeight;
       }
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(dom.cameraVideo, 0, 0, vWidth, vHeight);
-      const imgData = ctx.getImageData(0, 0, vWidth, vHeight);
+
+      // Apply digital zoom if active
+      if (state.currentZoom > 1.0) {
+        const cropW = vWidth / state.currentZoom;
+        const cropH = vHeight / state.currentZoom;
+        const cropX = (vWidth - cropW) / 2;
+        const cropY = (vHeight - cropH) / 2;
+        ctx.drawImage(dom.cameraVideo, cropX, cropY, cropW, cropH, 0, 0, vWidth, vHeight);
+      } else {
+        ctx.drawImage(dom.cameraVideo, 0, 0, vWidth, vHeight);
+      }
 
       let found = null;
 
-      // 1. Native BarcodeDetector (fastest, supports QR, Code 128, Code 39, EAN, UPC)
+      // 1. Native BarcodeDetector (supports data_matrix, qr_code, code_128, code_39, ean_13)
       if (!found && state.barcodeDetector) {
         try {
           const barcodes = await state.barcodeDetector.detect(canvas);
@@ -936,15 +965,7 @@
         } catch (bErr) {}
       }
 
-      // 2. jsQR (robust QR engine)
-      if (!found && typeof jsQR !== 'undefined') {
-        const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
-        if (qr && qr.data && qr.data.trim()) {
-          found = qr.data.trim();
-        }
-      }
-
-      // 3. ZXing fallback (handles 1D barcodes and QR)
+      // 2. ZXing MultiFormat Reader (handles Data Matrix, Code 128, QR Code, Aztec, PDF417)
       if (!found && typeof ZXing !== 'undefined') {
         try {
           const reader = getZxingReader();
@@ -955,6 +976,15 @@
             }
           }
         } catch (zErr) {}
+      }
+
+      // 3. jsQR fallback (for QR codes)
+      if (!found && typeof jsQR !== 'undefined') {
+        const imgData = ctx.getImageData(0, 0, vWidth, vHeight);
+        const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
+        if (qr && qr.data && qr.data.trim()) {
+          found = qr.data.trim();
+        }
       }
 
       if (found) {
@@ -1087,7 +1117,7 @@
     setTimeout(() => setScannerStatus('Scanning for QR / Barcode...', 'active'), 500);
   }
 
-  // Handle Photo / File snapshot scanning (Html5Qrcode.scanFile + jsQR dual analysis)
+  // Handle Photo / File snapshot scanning (Html5Qrcode + ZXing + BarcodeDetector + jsQR)
   dom.filePhotoInput.addEventListener('change', async (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
@@ -1096,41 +1126,98 @@
       setScannerStatus('Analyzing photo...', 'active');
       let detectedText = null;
 
+      const supportedFormats = [
+        Html5QrcodeSupportedFormats.DATA_MATRIX,
+        Html5QrcodeSupportedFormats.QR_CODE,
+        Html5QrcodeSupportedFormats.CODE_128,
+        Html5QrcodeSupportedFormats.CODE_39,
+        Html5QrcodeSupportedFormats.CODE_93,
+        Html5QrcodeSupportedFormats.EAN_13,
+        Html5QrcodeSupportedFormats.EAN_8,
+        Html5QrcodeSupportedFormats.PDF_417,
+        Html5QrcodeSupportedFormats.UPC_A,
+        Html5QrcodeSupportedFormats.UPC_E,
+        Html5QrcodeSupportedFormats.AZTEC,
+        Html5QrcodeSupportedFormats.ITF
+      ];
+
       // 1. Try Html5Qrcode.scanFile
       if (typeof Html5Qrcode !== 'undefined') {
         try {
-          const scannerInstance = html5QrScanner || new Html5Qrcode("qr-reader");
+          const scannerInstance = html5QrScanner || new Html5Qrcode("qr-reader", {
+            verbose: false,
+            formatsToSupport: supportedFormats
+          });
           detectedText = await scannerInstance.scanFile(file, false);
         } catch (hErr) {
           console.warn('Html5Qrcode file scan notice:', hErr);
         }
       }
 
-      // 2. Try jsQR on canvas
-      if (!detectedText && typeof jsQR !== 'undefined') {
-        const img = new Image();
-        await new Promise((res, rej) => {
-          img.onload = res;
-          img.onerror = rej;
-          img.src = URL.createObjectURL(file);
-        });
-        const pCanvas = document.createElement('canvas');
-        const pCtx = pCanvas.getContext('2d');
-        let w = img.naturalWidth || img.width;
-        let h = img.naturalHeight || img.height;
-        const maxDim = 1200;
-        if (w > maxDim || h > maxDim) {
-          if (w > h) {
-            h = Math.round((h * maxDim) / w);
-            w = maxDim;
-          } else {
-            w = Math.round((w * maxDim) / h);
-            h = maxDim;
-          }
+      // Load image on canvas for deep multi-engine fallback
+      const img = new Image();
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = rej;
+        img.src = URL.createObjectURL(file);
+      });
+
+      const pCanvas = document.createElement('canvas');
+      const pCtx = pCanvas.getContext('2d', { willReadFrequently: true });
+      let w = img.naturalWidth || img.width;
+      let h = img.naturalHeight || img.height;
+      const maxDim = 1600;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.round((h * maxDim) / w);
+          w = maxDim;
+        } else {
+          w = Math.round((w * maxDim) / h);
+          h = maxDim;
         }
-        pCanvas.width = w;
-        pCanvas.height = h;
-        pCtx.drawImage(img, 0, 0, w, h);
+      }
+      pCanvas.width = w;
+      pCanvas.height = h;
+      pCtx.drawImage(img, 0, 0, w, h);
+
+      // 2. Try Native BarcodeDetector (supports data_matrix, code_128, qr_code, etc.)
+      if (!detectedText && state.barcodeDetector) {
+        try {
+          const barcodes = await state.barcodeDetector.detect(pCanvas);
+          if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+            detectedText = barcodes[0].rawValue.trim();
+          }
+        } catch (bErr) {}
+      }
+
+      // 3. Try ZXing BrowserMultiFormatReader on Canvas
+      if (!detectedText && typeof ZXing !== 'undefined') {
+        try {
+          const reader = getZxingReader();
+          if (reader && reader.decodeFromCanvas) {
+            const zxRes = reader.decodeFromCanvas(pCanvas);
+            if (zxRes && zxRes.getText()) {
+              detectedText = zxRes.getText().trim();
+            }
+          }
+        } catch (zErr) {}
+      }
+
+      // 4. Try ZXing on raw Image Element
+      if (!detectedText && typeof ZXing !== 'undefined') {
+        try {
+          const reader = getZxingReader();
+          if (reader && reader.decodeFromImageElement) {
+            const zxRes = await reader.decodeFromImageElement(img);
+            if (zxRes && zxRes.getText()) {
+              detectedText = zxRes.getText().trim();
+            }
+          }
+        } catch (zErr2) {}
+      }
+
+      // 5. Try jsQR on canvas (pure QR fallback)
+      if (!detectedText && typeof jsQR !== 'undefined') {
         const imgData = pCtx.getImageData(0, 0, w, h);
         const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
         if (qr && qr.data && qr.data.trim()) {
@@ -1144,7 +1231,7 @@
         handleDetectedCode(cleanId);
       } else {
         setScannerStatus('No code detected in photo', 'error');
-        alert('No barcode or QR code detected. Please ensure clear lighting and take a close-up photo of the shipping label.');
+        alert('No barcode or Data Matrix / QR code detected. Please ensure clear lighting and take a close-up photo of the shipping label.');
       }
     } catch (err) {
       alert('Failed to process image: ' + err.message);
