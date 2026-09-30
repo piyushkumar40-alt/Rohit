@@ -103,7 +103,9 @@ function calculateGitSha(buf) {
   return crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
 }
 
-async function uploadFile(relPath, branch) {
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function uploadFile(relPath, branch, maxRetries = 3) {
   const cleanPath = relPath.replace(/\\/g, '/');
   const fullPath = path.join(__dirname, relPath);
   if (!fs.existsSync(fullPath)) {
@@ -113,26 +115,40 @@ async function uploadFile(relPath, branch) {
 
   const fileContent = fs.readFileSync(fullPath);
   const localSha = calculateGitSha(fileContent);
-  const existingSha = await getFileSha(cleanPath, branch);
 
-  if (existingSha && existingSha === localSha) {
-    console.log(`- ${cleanPath} [${branch}] is unchanged, skipping.`);
-    return;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const existingSha = await getFileSha(cleanPath, branch);
+
+      if (existingSha && existingSha === localSha) {
+        console.log(`- ${cleanPath} [${branch}] is unchanged, skipping.`);
+        return;
+      }
+
+      const base64Content = fileContent.toString('base64');
+      const payload = {
+        message: existingSha ? `Update ${cleanPath}` : `Add ${cleanPath}`,
+        content: base64Content,
+        branch: branch
+      };
+      if (existingSha) {
+        payload.sha = existingSha;
+      }
+
+      console.log(`Uploading ${cleanPath} [${branch}] (attempt ${attempt})...`);
+      await githubRequest(`/repos/${OWNER}/${REPO}/contents/${cleanPath}`, 'PUT', payload);
+      console.log(`✓ ${cleanPath} [${branch}] deployed successfully.`);
+      await sleep(1500);
+      return;
+    } catch (err) {
+      if (attempt < maxRetries) {
+        console.warn(`⚠️ Attempt ${attempt} failed for ${cleanPath} [${branch}]: ${err.message}. Retrying in 2.5s...`);
+        await sleep(2500);
+      } else {
+        throw err;
+      }
+    }
   }
-
-  const base64Content = fileContent.toString('base64');
-  const payload = {
-    message: existingSha ? `Update ${cleanPath}` : `Add ${cleanPath}`,
-    content: base64Content,
-    branch: branch
-  };
-  if (existingSha) {
-    payload.sha = existingSha;
-  }
-
-  console.log(`Uploading ${cleanPath} [${branch}]...`);
-  await githubRequest(`/repos/${OWNER}/${REPO}/contents/${cleanPath}`, 'PUT', payload);
-  console.log(`✓ ${cleanPath} [${branch}] deployed successfully.`);
 }
 
 async function run() {
