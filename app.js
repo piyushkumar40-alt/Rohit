@@ -601,25 +601,87 @@
   // ==========================================================================
   // SCANNER ENGINE (CAMERA & BARCODE / QR DETECTION)
   // ==========================================================================
-  let zxingReader = null;
-  function getZxingReader() {
-    if (!zxingReader && typeof ZXing !== 'undefined' && ZXing.BrowserMultiFormatReader) {
+  // ==========================================================================
+  // SCANNER ENGINE (CAMERA & BARCODE / DATA MATRIX / QR DETECTION)
+  // ==========================================================================
+  let zxMultiReader = null;
+  function getZxingMultiReader() {
+    if (!zxMultiReader && typeof ZXing !== 'undefined') {
       try {
-        zxingReader = new ZXing.BrowserMultiFormatReader();
+        const hints = new Map();
+        hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+          ZXing.BarcodeFormat.DATA_MATRIX,
+          ZXing.BarcodeFormat.CODE_128,
+          ZXing.BarcodeFormat.QR_CODE,
+          ZXing.BarcodeFormat.CODE_39,
+          ZXing.BarcodeFormat.CODE_93,
+          ZXing.BarcodeFormat.EAN_13,
+          ZXing.BarcodeFormat.EAN_8,
+          ZXing.BarcodeFormat.PDF_417,
+          ZXing.BarcodeFormat.ITF,
+          ZXing.BarcodeFormat.AZTEC
+        ]);
+        hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+        zxMultiReader = new ZXing.MultiFormatReader();
+        zxMultiReader.setHints(hints);
       } catch (e) {
-        console.warn('ZXing init error:', e);
+        console.warn('ZXing multi-reader init warning:', e);
       }
     }
-    return zxingReader;
+    return zxMultiReader;
+  }
+
+  // Multi-pass Canvas Decoder using ZXing
+  // Pass 1: GlobalHistogramBinarizer (vital for Flipkart thermal labels & dense Data Matrix)
+  // Pass 2: HybridBinarizer (standard for sharp 1D/2D barcodes)
+  // Pass 3: Inverted Luminance (for dark-background labels or inverted prints)
+  function decodeCanvasWithZxing(canvas) {
+    if (!canvas || typeof ZXing === 'undefined') return null;
+    const reader = getZxingMultiReader();
+    if (!reader) return null;
+
+    try {
+      const lumSource = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
+
+      // 1. GlobalHistogramBinarizer (proven to decode Flipkart Data Matrix)
+      try {
+        const bitmapGlobal = new ZXing.BinaryBitmap(new ZXing.GlobalHistogramBinarizer(lumSource));
+        const res = reader.decodeWithState(bitmapGlobal);
+        if (res && res.getText()) return res.getText();
+      } catch (e) {}
+      reader.reset();
+
+      // 2. HybridBinarizer (standard barcodes)
+      try {
+        const bitmapHybrid = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lumSource));
+        const res = reader.decodeWithState(bitmapHybrid);
+        if (res && res.getText()) return res.getText();
+      } catch (e) {}
+      reader.reset();
+
+      // 3. Inverted Luminance (white-on-dark barcodes)
+      try {
+        const invSource = new ZXing.InvertedLuminanceSource(lumSource);
+        const bitmapInv = new ZXing.BinaryBitmap(new ZXing.GlobalHistogramBinarizer(invSource));
+        const res = reader.decodeWithState(bitmapInv);
+        if (res && res.getText()) return res.getText();
+      } catch (e) {}
+      reader.reset();
+    } catch (err) {}
+
+    return null;
   }
 
   async function initBarcodeDetector() {
-    getZxingReader();
+    getZxingMultiReader();
     if ('BarcodeDetector' in window) {
       try {
         const supportedFormats = await BarcodeDetector.getSupportedFormats();
         state.barcodeDetector = new BarcodeDetector({
-          formats: supportedFormats.length ? supportedFormats : ['data_matrix', 'qr_code', 'code_128', 'code_39', 'code_93', 'ean_13', 'ean_8', 'pdf417', 'upc_a', 'upc_e', 'itf', 'aztec']
+          formats: supportedFormats.length ? supportedFormats : [
+            'data_matrix', 'qr_code', 'code_128', 'code_39', 'code_93', 
+            'ean_13', 'ean_8', 'pdf417', 'upc_a', 'upc_e', 'itf', 'aztec'
+          ]
         });
         return true;
       } catch (e) {
@@ -633,6 +695,7 @@
   function extractTrackingId(raw) {
     if (!raw) return '';
     let str = String(raw).trim();
+
     // 1. If scanned code is a URL (e.g., https://ekartlogistics.com/.../FMPP009812451)
     if (str.startsWith('http://') || str.startsWith('https://')) {
       try {
@@ -644,22 +707,27 @@
         }
       } catch (e) {}
     }
-    // 2. If barcode/DataMatrix contains pipe, tab, comma, or newline delimiter (e.g., FMPP009812451|OD309182390123)
-    if (str.includes('|') || str.includes('\t') || str.includes(',') || str.includes('\n')) {
-      const tokens = str.split(/[|\t,\r\n]/).map(t => t.trim()).filter(Boolean);
-      for (const tok of tokens) {
-        if (/^FMP/i.test(tok) || /^OD/i.test(tok) || /^\d{10,}/.test(tok) || tok.length >= 8) {
-          return tok;
-        }
+
+    // 2. If barcode/DataMatrix contains pipe, tab, comma, semicolon, or newline delimiter
+    // Example: 5|\MB-7600436865430300|O|NCR/NDC|S|D|03|E|S|F|6A
+    if (str.includes('|') || str.includes('\t') || str.includes(',') || str.includes(';') || str.includes('\n')) {
+      const parts = str.split(/[|\t,;\n\r]+/).map(p => {
+        // Strip non-alphanumeric leading/trailing characters (like \ / # @ " ' spaces)
+        return p.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '').trim();
+      }).filter(Boolean);
+
+      const trackingRegex = /^[A-Z0-9_\-\.\/]{7,35}$/i;
+      const candidates = parts.filter(p => trackingRegex.test(p) && /\d/.test(p) && !p.toLowerCase().startsWith('http'));
+      if (candidates.length > 0) {
+        const best = candidates.find(c => /^(FMP|OD|LST|TRACK|DEL|EKT|EKART|MB|AWB)/i.test(c))
+                  || candidates.sort((a, b) => b.length - a.length)[0];
+        return best;
       }
     }
-    return str;
-  }
 
-  // Offscreen sampling canvas for iOS Safari and mobile frame capture
-  const scanCanvas = document.createElement('canvas');
-  // Scanner Engine - Dual Powered: Html5Qrcode (Mobile / iOS primary) + jsQR / ZXing (fallback)
-  let html5QrScanner = null;
+    // Strip leading/trailing symbols from simple raw strings
+    return str.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '').trim() || str;
+  }
 
   function setScannerStatus(msg, type = 'active') {
     const hint = document.getElementById('scanner-hud-text');
@@ -673,6 +741,27 @@
       hint.style.color = '#94a3b8';
     }
   }
+
+  // Offscreen helper canvases for high-res scanning and center-region crop
+  let centerCropCanvas = null;
+  function getCenterCropCanvas(source, vWidth, vHeight) {
+    if (!centerCropCanvas) {
+      centerCropCanvas = document.createElement('canvas');
+    }
+    const size = Math.floor(Math.min(vWidth, vHeight) * 0.65);
+    const sx = Math.floor((vWidth - size) / 2);
+    const sy = Math.floor((vHeight - size) / 2);
+    if (centerCropCanvas.width !== size || centerCropCanvas.height !== size) {
+      centerCropCanvas.width = size;
+      centerCropCanvas.height = size;
+    }
+    const cCtx = centerCropCanvas.getContext('2d', { willReadFrequently: true });
+    cCtx.drawImage(source, sx, sy, size, size, 0, 0, size, size);
+    return centerCropCanvas;
+  }
+
+  let lastScanTimestamp = 0;
+  const SCAN_INTERVAL_MS = 90; // ~11 scans per second for smooth video and zero lag
 
   async function startCamera() {
     try {
@@ -712,133 +801,99 @@
         throw new Error('Camera device not detected or camera streaming is not supported by your browser.');
       }
 
-      // Hide placeholder and update buttons
+      // Stop any existing stream
+      if (state.cameraStream) {
+        state.cameraStream.getTracks().forEach(t => t.stop());
+        state.cameraStream = null;
+      }
+
+      if (dom.qrReader) dom.qrReader.style.display = 'none';
+      dom.cameraVideo.style.display = 'block';
+      dom.cameraVideo.setAttribute('playsinline', 'true');
+      dom.cameraVideo.setAttribute('webkit-playsinline', 'true');
+      dom.cameraVideo.setAttribute('muted', 'true');
+      dom.cameraVideo.setAttribute('autoplay', 'true');
+      dom.cameraVideo.playsInline = true;
+      dom.cameraVideo.muted = true;
+      dom.cameraVideo.autoplay = true;
+
+      setScannerStatus('Opening camera lens...', 'active');
+
+      let stream = null;
+      // High-resolution constraints (1080p ideal) ensures high-density Data Matrix modules are crisp
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: state.currentFacingMode },
+            width: { ideal: 1920, min: 1280 },
+            height: { ideal: 1080, min: 720 }
+          },
+          audio: false
+        });
+      } catch (e1) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: state.currentFacingMode },
+            audio: false
+          });
+        } catch (e2) {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false
+          });
+        }
+      }
+
+      state.cameraStream = stream;
+      dom.cameraVideo.srcObject = stream;
+
+      await new Promise(resolve => {
+        if (dom.cameraVideo.videoWidth > 0) {
+          resolve();
+        } else {
+          const onReady = () => {
+            dom.cameraVideo.removeEventListener('loadedmetadata', onReady);
+            dom.cameraVideo.removeEventListener('canplay', onReady);
+            resolve();
+          };
+          dom.cameraVideo.addEventListener('loadedmetadata', onReady);
+          dom.cameraVideo.addEventListener('canplay', onReady);
+          setTimeout(resolve, 800);
+        }
+      });
+
+      try { await dom.cameraVideo.play(); } catch (e) {}
+
       dom.cameraPlaceholder.classList.add('hidden');
       dom.toggleCameraIcon.textContent = '⏹️';
       dom.btnToggleCamera.innerHTML = `<span>⏹️</span> Stop Camera`;
-      setScannerStatus('Starting camera stream...', 'active');
+      setScannerStatus('Point camera at Data Matrix, Barcode or QR', 'active');
 
-      // Primary Engine: Html5Qrcode
-      if (typeof Html5Qrcode !== 'undefined') {
-        const supportedFormats = [
-          Html5QrcodeSupportedFormats.DATA_MATRIX,
-          Html5QrcodeSupportedFormats.QR_CODE,
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.CODE_93,
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.EAN_8,
-          Html5QrcodeSupportedFormats.PDF_417,
-          Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.UPC_E,
-          Html5QrcodeSupportedFormats.AZTEC,
-          Html5QrcodeSupportedFormats.ITF
-        ];
-
-        if (!html5QrScanner) {
-          html5QrScanner = new Html5Qrcode("qr-reader", {
-            verbose: false,
-            formatsToSupport: supportedFormats
-          });
-        }
-
-        if (html5QrScanner.isScanning) {
-          try { await html5QrScanner.stop(); } catch (e) {}
-        }
-
-        if (dom.qrReader) dom.qrReader.style.display = 'block';
-        if (dom.cameraVideo) dom.cameraVideo.style.display = 'none';
-
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
-                      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-        const qrConfig = {
-          fps: 15,
-          qrbox: (viewfinderWidth, viewfinderHeight) => {
-            const minDim = Math.min(viewfinderWidth, viewfinderHeight);
-            return {
-              width: Math.floor(viewfinderWidth * 0.94),
-              height: Math.floor(Math.max(minDim * 0.90, 260))
-            };
-          },
-          experimentalFeatures: {
-            useBarCodeDetectorIfSupported: false // False on iOS to prevent WebKit freeze
-          }
-        };
-
-        // Determine best camera configuration
-        let cameraIdOrConfig;
-        if (isIOS) {
-          // On iOS WebKit (Safari & Chrome), facingMode: "environment" selects the main 1x rear camera.
-          // Passing deviceId on iOS often picks the fixed-focus Ultra-Wide lens (blurry at close range).
-          cameraIdOrConfig = { facingMode: state.currentFacingMode };
-        } else {
-          cameraIdOrConfig = { facingMode: state.currentFacingMode };
-          try {
-            const devices = await Html5Qrcode.getCameras();
-            if (devices && devices.length > 0) {
-              if (devices.length === 1) {
-                // Single camera device (laptop/desktop webcam)
-                cameraIdOrConfig = devices[0].id;
-              } else {
-                // Multi-camera device (e.g. mobile phone)
-                const isEnv = state.currentFacingMode === 'environment';
-                const preferred = devices.find(d => {
-                  const label = (d.label || '').toLowerCase();
-                  return isEnv
-                    ? (label.includes('back') || label.includes('rear') || label.includes('environment'))
-                    : (label.includes('front') || label.includes('user') || label.includes('facing front'));
-                });
-                cameraIdOrConfig = preferred ? preferred.id : (isEnv ? devices[devices.length - 1].id : devices[0].id);
-              }
-            }
-          } catch (camErr) {
-            console.warn('Html5Qrcode.getCameras notice:', camErr);
-          }
-        }
-
-        await html5QrScanner.start(
-          cameraIdOrConfig,
-          qrConfig,
-          (decodedText, decodedResult) => {
-            const cleanId = extractTrackingId(decodedText);
-            setScannerStatus(`✅ Scanned: ${cleanId}`, 'success');
-            handleDetectedCode(cleanId);
-          },
-          (errorMessage) => {
-            // Normal scan frame without barcode
-            setScannerStatus('Point camera at Data Matrix or Barcode', 'active');
-          }
-        );
-
-        state.scanLoopActive = true;
-
-        // Check torch capabilities
-        try {
-          const track = html5QrScanner.getRunningTrackCameraCapabilities();
-          if (track && track.torchFeature && track.torchFeature().isSupported()) {
+      // Check hardware torch & continuous autofocus capabilities
+      try {
+        const track = stream.getVideoTracks()[0];
+        if (track && track.getCapabilities) {
+          const caps = track.getCapabilities();
+          if (caps.torch) {
             dom.btnTorch.classList.remove('hidden');
           }
-        } catch (tErr) {}
+          if (caps.focusMode && Array.isArray(caps.focusMode) && caps.focusMode.includes('continuous')) {
+            try {
+              await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+            } catch (fErr) {}
+          }
+        }
+      } catch (e) {}
 
-      } else {
-        // Direct WebCam & jsQR fallback
-        await startCameraDirect();
-      }
+      // Apply initial zoom setting
+      applyZoom(state.currentZoom);
+
+      state.scanLoopActive = true;
+      lastScanTimestamp = 0;
+      requestAnimationFrame(scanDirectFrame);
 
     } catch (err) {
       console.error('Camera Start Error:', err);
-      // If Html5Qrcode failed (e.g. constraints error), try direct fallback
-      if (!state.scanLoopActive) {
-        try {
-          console.log('Attempting direct camera fallback...');
-          await startCameraDirect();
-          return;
-        } catch (fallbackErr) {
-          console.error('Direct fallback also failed:', fallbackErr);
-        }
-      }
-
       dom.cameraPlaceholder.classList.remove('hidden');
       setScannerStatus('Camera access error', 'error');
       dom.cameraStatusText.innerHTML = `
@@ -856,141 +911,75 @@
     }
   }
 
-  // Direct getUserMedia + Canvas + jsQR / BarcodeDetector / ZXing Fallback Engine
-  async function startCameraDirect() {
-    if (dom.qrReader) dom.qrReader.style.display = 'none';
-    dom.cameraVideo.style.display = 'block';
-    dom.cameraVideo.setAttribute('playsinline', 'true');
-    dom.cameraVideo.setAttribute('webkit-playsinline', 'true');
-    dom.cameraVideo.setAttribute('muted', 'true');
-    dom.cameraVideo.setAttribute('autoplay', 'true');
-    dom.cameraVideo.playsInline = true;
-    dom.cameraVideo.muted = true;
-    dom.cameraVideo.autoplay = true;
-
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
-                  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-    let stream = null;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: isIOS 
-          ? { facingMode: state.currentFacingMode }
-          : { facingMode: { ideal: state.currentFacingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
-      });
-    } catch (e1) {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: state.currentFacingMode },
-          audio: false
-        });
-      } catch (e2) {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false
-        });
-      }
-    }
-
-    state.cameraStream = stream;
-    dom.cameraVideo.srcObject = stream;
-
-    await new Promise(resolve => {
-      if (dom.cameraVideo.videoWidth > 0) {
-        resolve();
-      } else {
-        const onReady = () => {
-          dom.cameraVideo.removeEventListener('loadedmetadata', onReady);
-          dom.cameraVideo.removeEventListener('canplay', onReady);
-          resolve();
-        };
-        dom.cameraVideo.addEventListener('loadedmetadata', onReady);
-        dom.cameraVideo.addEventListener('canplay', onReady);
-        setTimeout(resolve, 800);
-      }
-    });
-
-    try { await dom.cameraVideo.play(); } catch (e) {}
-
-    dom.cameraPlaceholder.classList.add('hidden');
-    dom.toggleCameraIcon.textContent = '⏹️';
-    dom.btnToggleCamera.innerHTML = `<span>⏹️</span> Stop Camera`;
-
-    try {
-      const track = stream.getVideoTracks()[0];
-      const caps = track.getCapabilities ? track.getCapabilities() : {};
-      if (caps.torch) {
-        dom.btnTorch.classList.remove('hidden');
-      }
-    } catch (e) {}
-
-    state.scanLoopActive = true;
-    requestAnimationFrame(scanDirectFrame);
-  }
-
   async function scanDirectFrame(timestamp) {
     if (!state.scanLoopActive) return;
 
     if (dom.cameraVideo && !dom.cameraVideo.paused && dom.cameraVideo.videoWidth > 0 && dom.cameraVideo.videoHeight > 0) {
-      const vWidth = dom.cameraVideo.videoWidth;
-      const vHeight = dom.cameraVideo.videoHeight;
-      const canvas = dom.cameraCanvas;
-      if (canvas.width !== vWidth || canvas.height !== vHeight) {
-        canvas.width = vWidth;
-        canvas.height = vHeight;
-      }
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      // Throttle decode invocations to keep CPU usage low and video smooth
+      if (!timestamp || timestamp - lastScanTimestamp >= SCAN_INTERVAL_MS) {
+        lastScanTimestamp = timestamp || performance.now();
 
-      // Apply digital zoom if active
-      if (state.currentZoom > 1.0) {
-        const cropW = vWidth / state.currentZoom;
-        const cropH = vHeight / state.currentZoom;
-        const cropX = (vWidth - cropW) / 2;
-        const cropY = (vHeight - cropH) / 2;
-        ctx.drawImage(dom.cameraVideo, cropX, cropY, cropW, cropH, 0, 0, vWidth, vHeight);
-      } else {
-        ctx.drawImage(dom.cameraVideo, 0, 0, vWidth, vHeight);
-      }
-
-      let found = null;
-
-      // 1. Native BarcodeDetector (supports data_matrix, qr_code, code_128, code_39, ean_13)
-      if (!found && state.barcodeDetector) {
-        try {
-          const barcodes = await state.barcodeDetector.detect(canvas);
-          if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
-            found = barcodes[0].rawValue.trim();
-          }
-        } catch (bErr) {}
-      }
-
-      // 2. ZXing MultiFormat Reader (handles Data Matrix, Code 128, QR Code, Aztec, PDF417)
-      if (!found && typeof ZXing !== 'undefined') {
-        try {
-          const reader = getZxingReader();
-          if (reader && reader.decodeFromCanvas) {
-            const zxRes = reader.decodeFromCanvas(canvas);
-            if (zxRes && zxRes.getText()) {
-              found = zxRes.getText().trim();
-            }
-          }
-        } catch (zErr) {}
-      }
-
-      // 3. jsQR fallback (for QR codes)
-      if (!found && typeof jsQR !== 'undefined') {
-        const imgData = ctx.getImageData(0, 0, vWidth, vHeight);
-        const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
-        if (qr && qr.data && qr.data.trim()) {
-          found = qr.data.trim();
+        const vWidth = dom.cameraVideo.videoWidth;
+        const vHeight = dom.cameraVideo.videoHeight;
+        const canvas = dom.cameraCanvas;
+        if (canvas.width !== vWidth || canvas.height !== vHeight) {
+          canvas.width = vWidth;
+          canvas.height = vHeight;
         }
-      }
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-      if (found) {
-        const cleanId = extractTrackingId(found);
-        setScannerStatus(`✅ Scanned: ${cleanId}`, 'success');
-        handleDetectedCode(cleanId);
+        // Apply digital zoom crop on processing canvas
+        if (state.currentZoom > 1.0) {
+          const cropW = vWidth / state.currentZoom;
+          const cropH = vHeight / state.currentZoom;
+          const cropX = (vWidth - cropW) / 2;
+          const cropY = (vHeight - cropH) / 2;
+          ctx.drawImage(dom.cameraVideo, cropX, cropY, cropW, cropH, 0, 0, vWidth, vHeight);
+        } else {
+          ctx.drawImage(dom.cameraVideo, 0, 0, vWidth, vHeight);
+        }
+
+        let found = null;
+
+        // 1. Native BarcodeDetector (Chrome/Edge/Android - native C++ MLKit speed)
+        if (!found && state.barcodeDetector) {
+          try {
+            const barcodes = await state.barcodeDetector.detect(canvas);
+            if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+              found = barcodes[0].rawValue.trim();
+            }
+          } catch (bErr) {}
+        }
+
+        // 2. ZXing MultiFormat Reader with GlobalHistogramBinarizer (vital for Flipkart Data Matrix)
+        if (!found && typeof ZXing !== 'undefined') {
+          found = decodeCanvasWithZxing(canvas);
+        }
+
+        // 3. Center Crop Pass (extracts the sharp central 65% reticle region for small/dense codes)
+        if (!found && typeof ZXing !== 'undefined' && vWidth >= 700) {
+          const cropCanvas = getCenterCropCanvas(dom.cameraVideo, vWidth, vHeight);
+          found = decodeCanvasWithZxing(cropCanvas);
+        }
+
+        // 4. jsQR fallback (for QR codes on iOS Safari)
+        if (!found && typeof jsQR !== 'undefined') {
+          try {
+            const sampleW = Math.min(vWidth, 800);
+            const sampleH = Math.min(vHeight, 800);
+            const imgData = ctx.getImageData(0, 0, sampleW, sampleH);
+            const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
+            if (qr && qr.data && qr.data.trim()) {
+              found = qr.data.trim();
+            }
+          } catch (qErr) {}
+        }
+
+        if (found) {
+          const cleanId = extractTrackingId(found);
+          setScannerStatus(`✅ Scanned: ${cleanId}`, 'success');
+          handleDetectedCode(cleanId);
+        }
       }
     }
 
@@ -1002,15 +991,6 @@
   async function stopCamera() {
     state.scanLoopActive = false;
     state.torchActive = false;
-    if (html5QrScanner) {
-      try {
-        if (html5QrScanner.isScanning) {
-          await html5QrScanner.stop();
-        }
-      } catch (e) {
-        console.warn('Html5Qrcode stop:', e);
-      }
-    }
     if (state.cameraStream) {
       state.cameraStream.getTracks().forEach(track => track.stop());
       state.cameraStream = null;
@@ -1018,6 +998,7 @@
     if (dom.cameraVideo) {
       dom.cameraVideo.srcObject = null;
       dom.cameraVideo.style.display = 'none';
+      dom.cameraVideo.style.transform = 'none';
     }
     if (dom.qrReader) {
       dom.qrReader.style.display = 'none';
@@ -1041,46 +1022,38 @@
 
   async function toggleTorch() {
     state.torchActive = !state.torchActive;
-    if (html5QrScanner && html5QrScanner.isScanning) {
-      try {
-        await html5QrScanner.applyVideoConstraints({
-          advanced: [{ torch: state.torchActive }]
-        });
-        dom.btnTorch.innerHTML = state.torchActive ? '<span>⚡</span> Torch ON' : '<span>💡</span> Torch';
-      } catch (e) {
-        console.warn('Torch toggle error:', e);
-      }
-    } else if (state.cameraStream) {
+    if (state.cameraStream) {
       const track = state.cameraStream.getVideoTracks()[0];
       if (track) {
         try {
           await track.applyConstraints({ advanced: [{ torch: state.torchActive }] });
           dom.btnTorch.innerHTML = state.torchActive ? '<span>⚡</span> Torch ON' : '<span>💡</span> Torch';
-        } catch (e) {}
+        } catch (e) {
+          console.warn('Torch toggle error:', e);
+        }
       }
     }
   }
+
   // Zoom & Refocus Controller
   state.currentZoom = 1.0;
 
   async function applyZoom(level) {
     state.currentZoom = level;
-    // 1. Hardware digital zoom on track
-    if (html5QrScanner) {
-      try {
-        await html5QrScanner.applyVideoConstraints({
-          advanced: [{ zoom: level }]
-        });
-      } catch (e) {
-        // Hardware zoom unsupported on older WebKit, will use CSS scale
+    // 1. Hardware digital zoom on track if supported
+    if (state.cameraStream) {
+      const track = state.cameraStream.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({ advanced: [{ zoom: level }] });
+        } catch (e) {}
       }
     }
     // 2. CSS Magnification zoom on video viewport
-    const v = document.querySelector('#qr-reader video') || dom.cameraVideo;
-    if (v) {
-      v.style.transform = `scale(${level})`;
-      v.style.transformOrigin = 'center center';
-      v.style.transition = 'transform 0.2s ease-out';
+    if (dom.cameraVideo) {
+      dom.cameraVideo.style.transform = level > 1 ? `scale(${level})` : 'none';
+      dom.cameraVideo.style.transformOrigin = 'center center';
+      dom.cameraVideo.style.transition = 'transform 0.2s ease-out';
     }
     // Update zoom pill UI
     document.querySelectorAll('.zoom-btn').forEach(btn => {
@@ -1100,13 +1073,7 @@
       setTimeout(() => ring.classList.add('hidden'), 700);
     }
 
-    if (html5QrScanner) {
-      try {
-        await html5QrScanner.applyVideoConstraints({
-          advanced: [{ focusMode: 'continuous' }]
-        });
-      } catch (e) {}
-    } else if (state.cameraStream) {
+    if (state.cameraStream) {
       const track = state.cameraStream.getVideoTracks()[0];
       if (track) {
         try {
@@ -1114,47 +1081,19 @@
         } catch (e) {}
       }
     }
-    setTimeout(() => setScannerStatus('Scanning for QR / Barcode...', 'active'), 500);
+    setTimeout(() => setScannerStatus('Scanning for Data Matrix, Barcode or QR...', 'active'), 500);
   }
 
-  // Handle Photo / File snapshot scanning (Html5Qrcode + ZXing + BarcodeDetector + jsQR)
+  // Handle Photo / File snapshot scanning (ZXing GlobalHistogram + BarcodeDetector + jsQR)
   dom.filePhotoInput.addEventListener('change', async (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
 
     try {
-      setScannerStatus('Analyzing photo...', 'active');
+      setScannerStatus('Analyzing photo for barcodes...', 'active');
       let detectedText = null;
 
-      const supportedFormats = [
-        Html5QrcodeSupportedFormats.DATA_MATRIX,
-        Html5QrcodeSupportedFormats.QR_CODE,
-        Html5QrcodeSupportedFormats.CODE_128,
-        Html5QrcodeSupportedFormats.CODE_39,
-        Html5QrcodeSupportedFormats.CODE_93,
-        Html5QrcodeSupportedFormats.EAN_13,
-        Html5QrcodeSupportedFormats.EAN_8,
-        Html5QrcodeSupportedFormats.PDF_417,
-        Html5QrcodeSupportedFormats.UPC_A,
-        Html5QrcodeSupportedFormats.UPC_E,
-        Html5QrcodeSupportedFormats.AZTEC,
-        Html5QrcodeSupportedFormats.ITF
-      ];
-
-      // 1. Try Html5Qrcode.scanFile
-      if (typeof Html5Qrcode !== 'undefined') {
-        try {
-          const scannerInstance = html5QrScanner || new Html5Qrcode("qr-reader", {
-            verbose: false,
-            formatsToSupport: supportedFormats
-          });
-          detectedText = await scannerInstance.scanFile(file, false);
-        } catch (hErr) {
-          console.warn('Html5Qrcode file scan notice:', hErr);
-        }
-      }
-
-      // Load image on canvas for deep multi-engine fallback
+      // Load image into HTML Image object
       const img = new Image();
       await new Promise((res, rej) => {
         img.onload = res;
@@ -1166,21 +1105,11 @@
       const pCtx = pCanvas.getContext('2d', { willReadFrequently: true });
       let w = img.naturalWidth || img.width;
       let h = img.naturalHeight || img.height;
-      const maxDim = 1600;
-      if (w > maxDim || h > maxDim) {
-        if (w > h) {
-          h = Math.round((h * maxDim) / w);
-          w = maxDim;
-        } else {
-          w = Math.round((w * maxDim) / h);
-          h = maxDim;
-        }
-      }
       pCanvas.width = w;
       pCanvas.height = h;
       pCtx.drawImage(img, 0, 0, w, h);
 
-      // 2. Try Native BarcodeDetector (supports data_matrix, code_128, qr_code, etc.)
+      // 1. Try Native BarcodeDetector (Chrome / Android)
       if (!detectedText && state.barcodeDetector) {
         try {
           const barcodes = await state.barcodeDetector.detect(pCanvas);
@@ -1190,39 +1119,38 @@
         } catch (bErr) {}
       }
 
-      // 3. Try ZXing BrowserMultiFormatReader on Canvas
+      // 2. Try ZXing with GlobalHistogramBinarizer on full image
       if (!detectedText && typeof ZXing !== 'undefined') {
-        try {
-          const reader = getZxingReader();
-          if (reader && reader.decodeFromCanvas) {
-            const zxRes = reader.decodeFromCanvas(pCanvas);
-            if (zxRes && zxRes.getText()) {
-              detectedText = zxRes.getText().trim();
-            }
-          }
-        } catch (zErr) {}
+        detectedText = decodeCanvasWithZxing(pCanvas);
       }
 
-      // 4. Try ZXing on raw Image Element
-      if (!detectedText && typeof ZXing !== 'undefined') {
-        try {
-          const reader = getZxingReader();
-          if (reader && reader.decodeFromImageElement) {
-            const zxRes = await reader.decodeFromImageElement(img);
-            if (zxRes && zxRes.getText()) {
-              detectedText = zxRes.getText().trim();
-            }
-          }
-        } catch (zErr2) {}
+      // 3. If high-resolution photo (> 1200px), try downscaled version (1200px max)
+      // This is crucial for iPhone 48MP photos where massive image size can cause detection timeouts
+      if (!detectedText && (w > 1200 || h > 1200) && typeof ZXing !== 'undefined') {
+        const scaledCanvas = document.createElement('canvas');
+        const scale = 1200 / Math.max(w, h);
+        scaledCanvas.width = Math.round(w * scale);
+        scaledCanvas.height = Math.round(h * scale);
+        const sCtx = scaledCanvas.getContext('2d', { willReadFrequently: true });
+        sCtx.drawImage(img, 0, 0, scaledCanvas.width, scaledCanvas.height);
+        detectedText = decodeCanvasWithZxing(scaledCanvas);
+      }
+
+      // 4. Try center crop of the photo (if label is centered)
+      if (!detectedText && typeof ZXing !== 'undefined' && (w >= 600 && h >= 600)) {
+        const cropC = getCenterCropCanvas(pCanvas, w, h);
+        detectedText = decodeCanvasWithZxing(cropC);
       }
 
       // 5. Try jsQR on canvas (pure QR fallback)
       if (!detectedText && typeof jsQR !== 'undefined') {
-        const imgData = pCtx.getImageData(0, 0, w, h);
-        const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
-        if (qr && qr.data && qr.data.trim()) {
-          detectedText = qr.data.trim();
-        }
+        try {
+          const imgData = pCtx.getImageData(0, 0, Math.min(w, 1000), Math.min(h, 1000));
+          const qr = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
+          if (qr && qr.data && qr.data.trim()) {
+            detectedText = qr.data.trim();
+          }
+        } catch (qErr) {}
       }
 
       if (detectedText) {
@@ -1264,7 +1192,7 @@
   });
   dom.btnToggleCamera.addEventListener('click', () => {
     getAudioContext();
-    if (state.scanLoopActive || state.cameraStream || (html5QrScanner && html5QrScanner.isScanning)) {
+    if (state.scanLoopActive || state.cameraStream) {
       stopCamera();
     } else {
       startCamera();
@@ -1288,11 +1216,11 @@
   });
 
   // Tap-to-focus on camera viewfinder
-  const touchOverlay = document.getElementById('scanner-touch-overlay');
-  if (touchOverlay) {
-    touchOverlay.addEventListener('click', (e) => {
-      if (e.target.closest('.zoom-btn') || e.target.closest('.zoom-controls-pill')) return;
-      const rect = touchOverlay.getBoundingClientRect();
+  const cameraContainer = document.getElementById('camera-container');
+  if (cameraContainer) {
+    cameraContainer.addEventListener('click', (e) => {
+      if (e.target.closest('.zoom-btn') || e.target.closest('.zoom-controls-pill') || e.target.closest('button')) return;
+      const rect = cameraContainer.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
       triggerRefocus(x, y);
