@@ -357,6 +357,477 @@
     }
   };
 
+  // --- GitHub Cloud Database Engine (Direct Cloud Storage) ---
+  const githubSync = {
+    DEFAULT_OWNER: 'piyushkumar40-alt',
+    DEFAULT_REPO: 'Rohit',
+    DEFAULT_BRANCH: 'main',
+    DB1_PATH: 'data/flipkart_returns.json',
+    DB2_PATH: 'data/scanned_returns.json',
+
+    db1Sha: null,
+    db2Sha: null,
+    syncTimeout: null,
+    isSyncing: false,
+
+    getToken() {
+      return (localStorage.getItem('gh_sync_token') || '').trim();
+    },
+    setToken(token) {
+      if (token) localStorage.setItem('gh_sync_token', token.trim());
+      else localStorage.removeItem('gh_sync_token');
+    },
+    getOwner() {
+      return (localStorage.getItem('gh_sync_owner') || this.DEFAULT_OWNER).trim();
+    },
+    setOwner(owner) {
+      localStorage.setItem('gh_sync_owner', (owner || this.DEFAULT_OWNER).trim());
+    },
+    getRepo() {
+      return (localStorage.getItem('gh_sync_repo') || this.DEFAULT_REPO).trim();
+    },
+    setRepo(repo) {
+      localStorage.setItem('gh_sync_repo', (repo || this.DEFAULT_REPO).trim());
+    },
+    getBranch() {
+      return (localStorage.getItem('gh_sync_branch') || this.DEFAULT_BRANCH).trim();
+    },
+    setBranch(branch) {
+      localStorage.setItem('gh_sync_branch', (branch || this.DEFAULT_BRANCH).trim());
+    },
+    isAutoSync() {
+      const v = localStorage.getItem('gh_auto_sync');
+      return v === null ? true : v === 'true';
+    },
+    setAutoSync(enabled) {
+      localStorage.setItem('gh_auto_sync', String(enabled));
+    },
+
+    utf8ToBase64(str) {
+      return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => {
+        return String.fromCharCode(parseInt(p1, 16));
+      }));
+    },
+
+    base64ToUtf8(b64) {
+      const cleanB64 = b64.replace(/\s/g, '');
+      const binaryStr = atob(cleanB64);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+      return new TextDecoder().decode(bytes);
+    },
+
+    setStatus(type, text) {
+      if (dom.githubStatusBadge) {
+        dom.githubStatusBadge.className = `badge badge-github ${type}`;
+      }
+      if (dom.githubStatusText) {
+        dom.githubStatusText.textContent = text;
+      }
+      if (dom.ghModalStatusDot) {
+        dom.ghModalStatusDot.style.backgroundColor =
+          type === 'synced' ? '#10b981' :
+          type === 'syncing' ? '#f59e0b' :
+          type === 'error' ? '#ef4444' : '#38bdf8';
+        dom.ghModalStatusDot.style.boxShadow =
+          type === 'synced' ? '0 0 8px #10b981' :
+          type === 'syncing' ? '0 0 8px #f59e0b' :
+          type === 'error' ? '0 0 8px #ef4444' : '0 0 8px #38bdf8';
+      }
+      if (dom.ghModalStatusTitle) {
+        dom.ghModalStatusTitle.textContent =
+          type === 'synced' ? '🟢 Cloud Connected & Synced' :
+          type === 'syncing' ? '🟡 Syncing with GitHub...' :
+          type === 'error' ? '🔴 Sync Error: ' + text :
+          '⚪ GitHub Storage (Read-Only / Not Connected)';
+      }
+    },
+
+    async testConnection(token, owner, repo) {
+      const headers = {
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'Rohit-Returns-Tracker'
+      };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      return {
+        repoName: data.full_name,
+        isPrivate: data.private,
+        permissions: data.permissions || {}
+      };
+    },
+
+    async fetchFile(path) {
+      const token = this.getToken();
+      const owner = this.getOwner();
+      const repo = this.getRepo();
+      const branch = this.getBranch();
+
+      const headers = {
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'Rohit-Returns-Tracker'
+      };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}&_t=${Date.now()}`;
+      try {
+        const res = await fetch(apiUrl, { headers, cache: 'no-store' });
+        if (res.status === 404) return null;
+        if (!res.ok) {
+          throw new Error(`Failed to read ${path} (HTTP ${res.status})`);
+        }
+        const json = await res.json();
+        const contentStr = this.base64ToUtf8(json.content);
+        return {
+          sha: json.sha,
+          data: JSON.parse(contentStr)
+        };
+      } catch (apiErr) {
+        // Fallback to raw.githubusercontent.com if public
+        try {
+          const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}?_t=${Date.now()}`;
+          const rawRes = await fetch(rawUrl, { cache: 'no-store' });
+          if (rawRes.ok) {
+            const data = await rawRes.json();
+            return { sha: null, data };
+          }
+        } catch (rawErr) {}
+        throw apiErr;
+      }
+    },
+
+    async putFile(path, dataObj, commitMessage, existingSha = null) {
+      const token = this.getToken();
+      if (!token) throw new Error('Personal Access Token (PAT) is required to commit changes to GitHub.');
+
+      const owner = this.getOwner();
+      const repo = this.getRepo();
+      const branch = this.getBranch();
+
+      let sha = existingSha;
+      if (!sha) {
+        const existing = await this.fetchFile(path).catch(() => null);
+        if (existing) sha = existing.sha;
+      }
+
+      const jsonStr = JSON.stringify(dataObj, null, 2);
+      const payload = {
+        message: commitMessage || `Update ${path} [${new Date().toISOString()}]`,
+        content: this.utf8ToBase64(jsonStr),
+        branch: branch
+      };
+      if (sha) payload.sha = sha;
+
+      const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'Rohit-Returns-Tracker'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `Failed to write ${path} (HTTP ${res.status})`);
+      }
+
+      const result = await res.json();
+      return result.content ? result.content.sha : null;
+    },
+
+    async pullAll(silent = false) {
+      if (!silent) this.setStatus('syncing', 'Pulling from GitHub...');
+      try {
+        let pulledReturns = 0;
+        let pulledScans = 0;
+
+        // Pull DB1: Returns
+        const file1 = await this.fetchFile(this.DB1_PATH);
+        if (file1 && Array.isArray(file1.data)) {
+          this.db1Sha = file1.sha;
+          const localDb1 = clientStore.getDb1();
+          const mergedDb1 = this.mergeReturns(file1.data, localDb1);
+          clientStore.saveDb1(mergedDb1);
+          pulledReturns = mergedDb1.length;
+        }
+
+        // Pull DB2: Scans
+        const file2 = await this.fetchFile(this.DB2_PATH);
+        if (file2 && Array.isArray(file2.data)) {
+          this.db2Sha = file2.sha;
+          const localDb2 = clientStore.getDb2();
+          const mergedDb2 = this.mergeScans(file2.data, localDb2);
+          clientStore.saveDb2(mergedDb2);
+          pulledScans = mergedDb2.length;
+        }
+
+        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        localStorage.setItem('gh_last_synced', now);
+        this.updateModalSyncInfo(now);
+
+        if (this.getToken()) {
+          this.setStatus('synced', `Synced: ${now}`);
+        } else {
+          this.setStatus('default', `Cloud Read: ${now}`);
+        }
+
+        updateCounts();
+        if (typeof loadMissing === 'function') loadMissing();
+        if (typeof loadScans === 'function') loadScans();
+        if (typeof loadOverview === 'function') loadOverview();
+
+        return { success: true, returnsCount: pulledReturns, scansCount: pulledScans };
+      } catch (err) {
+        console.warn('GitHub pull warning:', err);
+        if (!silent) this.setStatus('error', 'Pull failed: ' + err.message);
+        throw err;
+      }
+    },
+
+    mergeReturns(remoteList, localList) {
+      const map = new Map();
+      for (const r of remoteList) {
+        if (r && r.tracking_id) map.set(String(r.tracking_id).trim().toLowerCase(), r);
+      }
+      for (const l of localList) {
+        if (l && l.tracking_id) {
+          const key = String(l.tracking_id).trim().toLowerCase();
+          if (!map.has(key)) map.set(key, l);
+        }
+      }
+      return Array.from(map.values());
+    },
+
+    mergeScans(remoteList, localList) {
+      const map = new Map();
+      for (const s of remoteList) {
+        if (s && s.tracking_id) map.set(String(s.tracking_id).trim().toLowerCase(), s);
+      }
+      for (const l of localList) {
+        if (l && l.tracking_id) {
+          const key = String(l.tracking_id).trim().toLowerCase();
+          if (!map.has(key)) map.set(key, l);
+        }
+      }
+      return Array.from(map.values()).sort((a, b) => (b.scanned_at || '').localeCompare(a.scanned_at || ''));
+    },
+
+    async pushReturns() {
+      const token = this.getToken();
+      if (!token) return;
+      this.setStatus('syncing', 'Saving returns to GitHub...');
+      const records = clientStore.getDb1();
+      const newSha = await this.putFile(
+        this.DB1_PATH,
+        records,
+        `chore(returns): update ${records.length} return manifest records`,
+        this.db1Sha
+      );
+      this.db1Sha = newSha;
+      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      localStorage.setItem('gh_last_synced', now);
+      this.setStatus('synced', `Synced: ${now}`);
+      this.updateModalSyncInfo(now);
+    },
+
+    async pushScans() {
+      const token = this.getToken();
+      if (!token) return;
+      this.setStatus('syncing', 'Saving scans to GitHub...');
+      const scans = clientStore.getDb2();
+      const newSha = await this.putFile(
+        this.DB2_PATH,
+        scans,
+        `chore(scans): record ${scans.length} scans`,
+        this.db2Sha
+      );
+      this.db2Sha = newSha;
+      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      localStorage.setItem('gh_last_synced', now);
+      this.setStatus('synced', `Synced: ${now}`);
+      this.updateModalSyncInfo(now);
+    },
+
+    scheduleAutoSyncScans() {
+      if (!this.isAutoSync() || !this.getToken()) return;
+      clearTimeout(this.syncTimeout);
+      this.setStatus('syncing', 'Auto-syncing scans...');
+      this.syncTimeout = setTimeout(async () => {
+        try {
+          await this.pushScans();
+        } catch (e) {
+          console.warn('Auto-sync scans push warning:', e);
+          this.setStatus('error', 'Auto-sync error');
+        }
+      }, 1500);
+    },
+
+    async syncNow() {
+      this.setStatus('syncing', 'Syncing with GitHub...');
+      await this.pullAll(true);
+      if (this.getToken()) {
+        await this.pushReturns();
+        await this.pushScans();
+      }
+      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      localStorage.setItem('gh_last_synced', now);
+      this.setStatus('synced', `Synced: ${now}`);
+      this.updateModalSyncInfo(now);
+    },
+
+    updateModalSyncInfo(time) {
+      if (dom.ghLastSyncedDisplay) dom.ghLastSyncedDisplay.textContent = time || 'Never';
+      if (dom.ghRepoDisplay) dom.ghRepoDisplay.textContent = `${this.getOwner()}/${this.getRepo()}`;
+      if (dom.ghBranchDisplay) dom.ghBranchDisplay.textContent = this.getBranch();
+    },
+
+    setupUI() {
+      if (dom.ghTokenInput) dom.ghTokenInput.value = this.getToken();
+      if (dom.ghOwnerInput) dom.ghOwnerInput.value = this.getOwner();
+      if (dom.ghRepoInput) dom.ghRepoInput.value = this.getRepo();
+      if (dom.ghBranchInput) dom.ghBranchInput.value = this.getBranch();
+      if (dom.ghAutoSyncCheckbox) dom.ghAutoSyncCheckbox.checked = this.isAutoSync();
+
+      const lastSynced = localStorage.getItem('gh_last_synced') || 'Never';
+      this.updateModalSyncInfo(lastSynced);
+
+      const openModal = () => {
+        if (dom.ghTokenInput) dom.ghTokenInput.value = this.getToken();
+        if (dom.githubModal) dom.githubModal.classList.remove('hidden');
+      };
+
+      if (dom.btnGithubStatus) dom.btnGithubStatus.addEventListener('click', openModal);
+      if (dom.btnGithubSync) dom.btnGithubSync.addEventListener('click', openModal);
+
+      if (dom.btnCloseGithubModal) {
+        dom.btnCloseGithubModal.addEventListener('click', () => {
+          if (dom.githubModal) dom.githubModal.classList.add('hidden');
+        });
+      }
+
+      if (dom.githubModal) {
+        dom.githubModal.addEventListener('click', (e) => {
+          if (e.target === dom.githubModal) dom.githubModal.classList.add('hidden');
+        });
+      }
+
+      if (dom.btnToggleTokenVisibility && dom.ghTokenInput) {
+        dom.btnToggleTokenVisibility.addEventListener('click', () => {
+          const isPassword = dom.ghTokenInput.type === 'password';
+          dom.ghTokenInput.type = isPassword ? 'text' : 'password';
+          dom.btnToggleTokenVisibility.textContent = isPassword ? '🙈' : '👁️';
+        });
+      }
+
+      if (dom.ghConfigForm) {
+        dom.ghConfigForm.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const token = dom.ghTokenInput ? dom.ghTokenInput.value.trim() : '';
+          const owner = dom.ghOwnerInput ? dom.ghOwnerInput.value.trim() : this.DEFAULT_OWNER;
+          const repo = dom.ghRepoInput ? dom.ghRepoInput.value.trim() : this.DEFAULT_REPO;
+          const branch = dom.ghBranchInput ? dom.ghBranchInput.value.trim() : this.DEFAULT_BRANCH;
+          const autoSync = dom.ghAutoSyncCheckbox ? dom.ghAutoSyncCheckbox.checked : true;
+
+          dom.btnSaveGhConfig.disabled = true;
+          dom.btnSaveGhConfig.innerHTML = `<span>⏳</span> Testing Connection...`;
+
+          try {
+            const check = await this.testConnection(token, owner, repo);
+            this.setToken(token);
+            this.setOwner(owner);
+            this.setRepo(repo);
+            this.setBranch(branch);
+            this.setAutoSync(autoSync);
+
+            alert(`✅ Connected successfully to ${check.repoName}!\nPermissions: Read & Write active.`);
+            await this.syncNow();
+            if (dom.githubModal) dom.githubModal.classList.add('hidden');
+          } catch (err) {
+            alert(`❌ Connection test failed: ${err.message}\nPlease check your token and repo permissions.`);
+            this.setStatus('error', err.message);
+          } finally {
+            dom.btnSaveGhConfig.disabled = false;
+            dom.btnSaveGhConfig.innerHTML = `<span>💾</span> Save & Test Connection`;
+          }
+        });
+      }
+
+      if (dom.btnGhSyncNow) {
+        dom.btnGhSyncNow.addEventListener('click', async () => {
+          dom.btnGhSyncNow.disabled = true;
+          dom.btnGhSyncNow.innerHTML = `<span>⏳</span> Syncing...`;
+          try {
+            await this.syncNow();
+            alert('✅ Sync with GitHub completed successfully!');
+          } catch (err) {
+            alert(`❌ Sync failed: ${err.message}`);
+          } finally {
+            dom.btnGhSyncNow.disabled = false;
+            dom.btnGhSyncNow.innerHTML = `<span>🔄</span> Sync Now (Pull & Push)`;
+          }
+        });
+      }
+
+      if (dom.btnGhForcePull) {
+        dom.btnGhForcePull.addEventListener('click', async () => {
+          if (!confirm('This will pull the latest data from GitHub and refresh your local view. Continue?')) return;
+          try {
+            await this.pullAll(false);
+            alert('✅ Latest data loaded from GitHub!');
+          } catch (err) {
+            alert(`❌ Pull failed: ${err.message}`);
+          }
+        });
+      }
+
+      if (dom.btnGhForcePush) {
+        dom.btnGhForcePush.addEventListener('click', async () => {
+          if (!this.getToken()) {
+            return alert('Please enter and save a GitHub Personal Access Token (PAT) first.');
+          }
+          if (!confirm('This will push your current returns and scans to the GitHub repository. Continue?')) return;
+          try {
+            await this.pushReturns();
+            await this.pushScans();
+            alert('✅ Data successfully pushed to GitHub!');
+          } catch (err) {
+            alert(`❌ Push failed: ${err.message}`);
+          }
+        });
+      }
+
+      if (dom.btnGhDisconnect) {
+        dom.btnGhDisconnect.addEventListener('click', () => {
+          if (!confirm('Disconnect token from this browser? (Data on GitHub will not be affected).')) return;
+          this.setToken('');
+          if (dom.ghTokenInput) dom.ghTokenInput.value = '';
+          this.setStatus('default', 'Disconnected');
+          alert('GitHub token removed from this browser.');
+        });
+      }
+    },
+
+    async init() {
+      this.setupUI();
+      try {
+        await this.pullAll(true);
+      } catch (e) {
+        console.warn('Initial cloud pull failed (will use local cache):', e);
+      }
+    }
+  };
+
   // Initialize client store defaults if on static host
   clientStore.initDefaults();
 
@@ -374,6 +845,31 @@
     mobileQrContainer: document.getElementById('mobile-qr-container'),
     mobileUrlText: document.getElementById('mobile-url-text'),
     btnCopyUrl: document.getElementById('btn-copy-url'),
+
+    // GitHub Storage Elements
+    btnGithubStatus: document.getElementById('btn-github-status'),
+    githubStatusText: document.getElementById('github-status-text'),
+    githubStatusBadge: document.getElementById('btn-github-status'),
+    btnGithubSync: document.getElementById('btn-github-sync'),
+    githubModal: document.getElementById('github-modal'),
+    btnCloseGithubModal: document.getElementById('btn-close-github-modal'),
+    ghModalStatusDot: document.getElementById('gh-modal-status-dot'),
+    ghModalStatusTitle: document.getElementById('gh-modal-status-title'),
+    ghRepoDisplay: document.getElementById('gh-repo-display'),
+    ghBranchDisplay: document.getElementById('gh-branch-display'),
+    ghLastSyncedDisplay: document.getElementById('gh-last-synced-display'),
+    ghConfigForm: document.getElementById('gh-config-form'),
+    ghTokenInput: document.getElementById('gh-token-input'),
+    btnToggleTokenVisibility: document.getElementById('btn-toggle-token-visibility'),
+    ghOwnerInput: document.getElementById('gh-owner-input'),
+    ghRepoInput: document.getElementById('gh-repo-input'),
+    ghBranchInput: document.getElementById('gh-branch-input'),
+    ghAutoSyncCheckbox: document.getElementById('gh-auto-sync-checkbox'),
+    btnSaveGhConfig: document.getElementById('btn-save-gh-config'),
+    btnGhSyncNow: document.getElementById('btn-gh-sync-now'),
+    btnGhForcePull: document.getElementById('btn-gh-force-pull'),
+    btnGhForcePush: document.getElementById('btn-gh-force-push'),
+    btnGhDisconnect: document.getElementById('btn-gh-disconnect'),
 
     // Scanner Elements
     qrReader: document.getElementById('qr-reader'),
@@ -1286,6 +1782,11 @@
 
       // Refresh missing counter in navigation
       updateCounts();
+
+      // Trigger background auto-sync to GitHub
+      if (typeof githubSync !== 'undefined') {
+        githubSync.scheduleAutoSyncScans();
+      }
     } catch (err) {
       console.error('Scan processing error:', err);
       alert('Error recording scan: ' + err.message);
@@ -1862,6 +2363,22 @@
         <span style="color:#94a3b8">${result.stats.ignored} existing/duplicate records ignored silently</span>.
       `);
 
+      // Push to GitHub if configured
+      if (typeof githubSync !== 'undefined' && githubSync.getToken()) {
+        try {
+          await githubSync.pushReturns();
+          showUploadStatus(true, `
+            <strong>Upload Successful & Synced to GitHub!</strong><br>
+            Processed ${result.stats.totalRows} records: 
+            <span style="color:#34d399">${result.stats.inserted} newly added</span>, 
+            <span style="color:#94a3b8">${result.stats.ignored} existing/duplicate records ignored</span>.<br>
+            <span style="color:#38bdf8">☁️ Committed directly to GitHub repository (data/flipkart_returns.json).</span>
+          `);
+        } catch (ghErr) {
+          console.warn('GitHub push warning after upload:', ghErr);
+        }
+      }
+
       dom.uploadPreviewContainer.classList.add('hidden');
       state.uploadedFileRecords = [];
       updateCounts();
@@ -2116,6 +2633,9 @@
   async function init() {
     setupUploadHandlers();
     setupMobileConnect();
+    if (typeof githubSync !== 'undefined') {
+      await githubSync.init();
+    }
     await initBarcodeDetector();
     updateCounts();
 
