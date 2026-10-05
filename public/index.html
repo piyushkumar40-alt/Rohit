@@ -31,11 +31,17 @@
         <span class="badge live-badge" id="connection-status">
           <span class="status-dot"></span> Live
         </span>
+        <button id="btn-github-status" class="badge badge-github" title="Configure GitHub Cloud Storage">
+          <span class="status-dot"></span> <span id="github-status-text">GitHub Storage</span>
+        </button>
       </div>
 
       <div class="header-actions">
         <button id="btn-sound-toggle" class="btn-icon" title="Toggle Sound Feedback">
           <span id="sound-icon">🔊</span>
+        </button>
+        <button id="btn-github-sync" class="btn-secondary-sm" title="Configure GitHub Cloud Storage & Sync">
+          <span>☁️</span> <span id="github-sync-btn-label">GitHub Sync</span>
         </button>
         <button id="btn-mobile-connect" class="btn-primary-sm">
           <span>📱</span> Connect Phone
@@ -466,6 +472,90 @@
       </section>
 
     </main>
+
+    <!-- GitHub Cloud Database Modal -->
+    <div id="github-modal" class="modal-backdrop hidden">
+      <div class="modal-card modal-lg">
+        <div class="modal-header">
+          <h3 class="modal-title">☁️ GitHub Cloud Storage & Sync</h3>
+          <button id="btn-close-github-modal" class="btn-icon">✕</button>
+        </div>
+        <div class="modal-body modal-body-form">
+          <p class="modal-desc">
+            Save manifests and scans directly into your GitHub repository (<code>data/flipkart_returns.json</code> & <code>data/scanned_returns.json</code>).
+            All your devices (mobile scanners, warehouse laptops, office desktops) stay 100% in sync without needing a separate server or database.
+          </p>
+
+          <div class="gh-sync-status-box" id="gh-sync-status-box">
+            <div class="gh-status-indicator">
+              <span class="status-dot" id="gh-modal-status-dot"></span>
+              <strong id="gh-modal-status-title">Checking connection...</strong>
+            </div>
+            <div class="gh-status-details" id="gh-status-details">
+              <span>Repo: <code id="gh-repo-display">piyushkumar40-alt/Rohit</code> (<span id="gh-branch-display">main</span>)</span>
+              <span>Last Sync: <span id="gh-last-synced-display">Never</span></span>
+            </div>
+          </div>
+
+          <form id="gh-config-form" class="gh-config-form">
+            <div class="form-group">
+              <label for="gh-token-input">GitHub Personal Access Token (PAT):</label>
+              <div class="token-input-row">
+                <input type="password" id="gh-token-input" placeholder="github_pat_..." autocomplete="off">
+                <button type="button" id="btn-toggle-token-visibility" class="btn-secondary-sm" title="Show/Hide Token">👁️</button>
+              </div>
+              <small class="form-hint">🔒 Token Safety: Stored locally only in this browser's localStorage. Never committed to git and only sent directly to <code>api.github.com</code>.</small>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group form-col">
+                <label for="gh-owner-input">Owner:</label>
+                <input type="text" id="gh-owner-input" value="piyushkumar40-alt">
+              </div>
+              <div class="form-group form-col">
+                <label for="gh-repo-input">Repository:</label>
+                <input type="text" id="gh-repo-input" value="Rohit">
+              </div>
+              <div class="form-group form-col">
+                <label for="gh-branch-input">Branch:</label>
+                <input type="text" id="gh-branch-input" value="main">
+              </div>
+            </div>
+
+            <div class="form-group-checkbox">
+              <label>
+                <input type="checkbox" id="gh-auto-sync-checkbox" checked>
+                <span><strong>Auto-Sync Enabled</strong> (Automatically commit new scans & imported manifests to GitHub)</span>
+              </label>
+            </div>
+
+            <div class="modal-btn-row">
+              <button type="submit" id="btn-save-gh-config" class="btn-primary">
+                <span>💾</span> Save & Test Connection
+              </button>
+              <button type="button" id="btn-gh-sync-now" class="btn-secondary">
+                <span>🔄</span> Sync Now (Pull & Push)
+              </button>
+            </div>
+
+            <div class="gh-advanced-actions">
+              <span class="label">Cloud Synchronization Actions:</span>
+              <div class="btn-group-sm">
+                <button type="button" id="btn-gh-force-pull" class="btn-secondary-sm" title="Pull latest data from GitHub to this browser">
+                  ⬇️ Pull from GitHub
+                </button>
+                <button type="button" id="btn-gh-force-push" class="btn-secondary-sm" title="Push current browser database to GitHub">
+                  ⬆️ Push to GitHub
+                </button>
+                <button type="button" id="btn-gh-disconnect" class="btn-danger-sm" title="Remove token from this browser">
+                  🗑️ Disconnect Token
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
 
     <!-- Mobile Connect Modal -->
     <div id="mobile-modal" class="modal-backdrop hidden">
