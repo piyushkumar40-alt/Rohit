@@ -42,7 +42,11 @@ const FILES_TO_DEPLOY = [
   'public/vendor/zxing.min.js',
   'public/data/sample_flipkart_returns.xlsx',
   'public/data/sample_flipkart_returns.csv',
+  'public/data/flipkart_returns.json',
+  'public/data/scanned_returns.json',
   'data/sample_flipkart_returns.csv',
+  'data/flipkart_returns.json',
+  'data/scanned_returns.json',
   'test/test_db.js',
   'test/test_api.js',
   'deploy_to_github.js'
