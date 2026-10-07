@@ -148,5 +148,27 @@
     "created_at": "2026-10-05 13:06:36",
     "is_scanned": 0,
     "scanned_at": null
+  },
+  {
+    "tracking_id": "FMPP009812457",
+    "order_id": "OD309182390129",
+    "order_item_id": "OI9823107",
+    "sku": "YOGA-MAT-6MM-PURP",
+    "product_name": "Eco Anti-Skid Yoga Mat 6mm Purple",
+    "return_reason": "Color mismatch",
+    "return_type": "Customer Return",
+    "return_date": "2026-09-23",
+    "customer_name": "Neha Gupta"
+  },
+  {
+    "tracking_id": "FMPP009812458",
+    "order_id": "OD309182390130",
+    "order_item_id": "OI9823108",
+    "sku": "HEADPHONES-ANC-BLK",
+    "product_name": "Active Noise Cancelling Wireless Headphones",
+    "return_reason": "Audio cut out in one ear",
+    "return_type": "Customer Return",
+    "return_date": "2026-09-23",
+    "customer_name": "Rohan Joshi"
   }
 ]
