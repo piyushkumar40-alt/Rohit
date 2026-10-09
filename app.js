@@ -834,7 +834,9 @@
     isSyncing: false,
 
     getMode() {
-      return localStorage.getItem('gs_mode') || this.DEFAULT_MODE;
+      const stored = localStorage.getItem('gs_mode');
+      if (stored) return stored;
+      return clientStore.isStaticHost ? 'apps_script' : 'service_account';
     },
     setMode(mode) {
       localStorage.setItem('gs_mode', mode);
@@ -914,15 +916,22 @@
       const sheetId = this.getSheetId();
       const scriptUrl = this.getAppsScriptUrl();
 
-      // If in service account mode or local server available:
-      if (mode === 'service_account' || !clientStore.isStaticHost) {
+      // If in service account mode:
+      if (mode === 'service_account') {
+        if (clientStore.isStaticHost) {
+          throw new Error('Service Account (API v4) requires your local Node.js server (http://localhost:3000).\n\nSince you are using the live GitHub Pages site, please switch to the "⚡ Apps Script Web App" tab above to connect your Google Sheet serverlessly!');
+        }
         if (!sheetId) throw new Error('Please enter your Google Spreadsheet ID.');
         const res = await fetch('/api/sheets/test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ spreadsheetId: sheetId })
         });
-        const data = await res.json();
+        const text = await res.text();
+        if (text.trim().startsWith('<')) {
+          throw new Error('Local server returned an HTML error instead of API response.');
+        }
+        const data = JSON.parse(text);
         if (!data.connected) {
           throw new Error(data.message || 'Connection test failed.');
         }
@@ -930,16 +939,46 @@
       } else {
         // Apps Script mode
         if (!scriptUrl) throw new Error('Please enter your Google Apps Script Web App URL.');
-        const pingUrl = new URL(scriptUrl);
+        if (scriptUrl.includes('docs.google.com/spreadsheets/d/')) {
+          throw new Error('You pasted your Google Sheet URL instead of the Web App URL.\n\nTo get your Web App URL:\n1. In your sheet, click Extensions > Apps Script\n2. Click Deploy > New deployment > Web app\n3. Set "Who has access" to "Anyone"\n4. Paste the URL that starts with https://script.google.com/macros/s/.../exec');
+        }
+        if (!scriptUrl.includes('/exec')) {
+          throw new Error('The Web App URL must end with "/exec" (e.g. https://script.google.com/macros/s/.../exec).\nMake sure you copied the Web App URL from Deploy > New deployment, not the browser editor URL.');
+        }
+
+        let pingUrl;
+        try {
+          pingUrl = new URL(scriptUrl);
+        } catch (e) {
+          throw new Error('Invalid URL format for Google Apps Script Web App.');
+        }
         pingUrl.searchParams.set('action', 'ping');
-        const res = await fetch(pingUrl.toString());
-        const data = await res.json();
+
+        let res;
+        try {
+          res = await fetch(pingUrl.toString());
+        } catch (netErr) {
+          throw new Error(`Could not reach Apps Script URL (${netErr.message}). Check your network connection.`);
+        }
+
+        const text = await res.text();
+        if (text.trim().startsWith('<') || text.includes('<!DOCTYPE') || text.includes('<html')) {
+          throw new Error('Google Apps Script returned an HTML page instead of JSON.\n\nThis happens when Google requires login. To fix:\n1. In your Google Sheet, click Extensions > Apps Script\n2. Click Deploy > Manage deployments\n3. Click the pencil icon (Edit)\n4. Change "Who has access" to "Anyone" (NOT "Only myself")\n5. Click Deploy and copy the updated Web App URL.');
+        }
+
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          throw new Error(`Failed to parse Apps Script response: ${text.slice(0, 120)}`);
+        }
+
         if (data.error || data.status !== 'ok') {
           throw new Error(data.message || 'Apps Script returned error.');
         }
         return {
           connected: true,
-          title: data.title,
+          title: data.title || 'Google Sheet',
           spreadsheetId: data.spreadsheetId
         };
       }
@@ -961,14 +1000,20 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ spreadsheetId: sheetId })
           });
-          const data = await res.json();
+          const text = await res.text();
+          if (text.trim().startsWith('<')) throw new Error('Server returned an HTML error.');
+          const data = JSON.parse(text);
           if (!data.success) throw new Error(data.message || 'Sync failed');
         } else if (scriptUrl) {
           // Client-side Apps Script sync
           const pingUrl = new URL(scriptUrl);
           pingUrl.searchParams.set('action', 'getData');
           const res = await fetch(pingUrl.toString());
-          const remoteData = await res.json();
+          const text = await res.text();
+          if (text.trim().startsWith('<')) {
+            throw new Error('Apps Script returned an HTML page. Ensure "Who has access" is set to "Anyone" in Web App deployment.');
+          }
+          const remoteData = JSON.parse(text);
           if (remoteData.success) {
             const localDb1 = clientStore.getDb1();
             const localDb2 = clientStore.getDb2();
@@ -1070,6 +1115,12 @@
           const last = localStorage.getItem('gs_last_synced') || 'Never';
           this.updateModalInfo(null, last, this.getSheetId());
           this.checkBackendStatus();
+
+          if (this.getMode() === 'apps_script' && dom.btnModeAppsScript) {
+            dom.btnModeAppsScript.click();
+          } else if (dom.btnModeServiceAccount) {
+            dom.btnModeServiceAccount.click();
+          }
         }
       };
 
