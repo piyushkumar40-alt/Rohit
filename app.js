@@ -828,6 +828,422 @@
     }
   };
 
+  // --- Google Sheets Cloud Database Engine ---
+  const googleSheetsSync = {
+    DEFAULT_MODE: 'service_account',
+    isSyncing: false,
+
+    getMode() {
+      return localStorage.getItem('gs_mode') || this.DEFAULT_MODE;
+    },
+    setMode(mode) {
+      localStorage.setItem('gs_mode', mode);
+    },
+    getSheetId() {
+      return (localStorage.getItem('gs_sheet_id') || '').trim();
+    },
+    setSheetId(id) {
+      if (id) localStorage.setItem('gs_sheet_id', id.trim());
+      else localStorage.removeItem('gs_sheet_id');
+    },
+    getAppsScriptUrl() {
+      return (localStorage.getItem('gs_apps_script_url') || '').trim();
+    },
+    setAppsScriptUrl(url) {
+      if (url) localStorage.setItem('gs_apps_script_url', url.trim());
+      else localStorage.removeItem('gs_apps_script_url');
+    },
+    isAutoSync() {
+      const v = localStorage.getItem('gs_auto_sync');
+      return v === null ? true : v === 'true';
+    },
+    setAutoSync(enabled) {
+      localStorage.setItem('gs_auto_sync', String(enabled));
+    },
+
+    extractSpreadsheetId(str) {
+      if (!str) return '';
+      const clean = str.trim();
+      const match = clean.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+      if (match) return match[1];
+      return clean;
+    },
+
+    setStatus(type, text) {
+      if (dom.sheetsStatusBadge) {
+        dom.sheetsStatusBadge.className = `badge badge-sheets ${type}`;
+      }
+      if (dom.sheetsStatusText) {
+        dom.sheetsStatusText.textContent = text;
+      }
+      if (dom.sheetsModalStatusDot) {
+        dom.sheetsModalStatusDot.style.backgroundColor =
+          type === 'synced' ? '#10b981' :
+          type === 'syncing' ? '#f59e0b' :
+          type === 'error' ? '#ef4444' : '#10b981';
+        dom.sheetsModalStatusDot.style.boxShadow =
+          type === 'synced' ? '0 0 8px #10b981' :
+          type === 'syncing' ? '0 0 8px #f59e0b' :
+          type === 'error' ? '0 0 8px #ef4444' : '0 0 8px #10b981';
+      }
+      if (dom.sheetsModalStatusTitle) {
+        dom.sheetsModalStatusTitle.textContent =
+          type === 'synced' ? '🟢 Google Sheet Connected & Synced' :
+          type === 'syncing' ? '🟡 Syncing with Google Sheet...' :
+          type === 'error' ? '🔴 Connection Error: ' + text :
+          '⚪ Google Sheet Storage (Not Connected)';
+      }
+    },
+
+    updateModalInfo(title, lastSynced, sheetId) {
+      if (dom.sheetsTitleDisplay) {
+        dom.sheetsTitleDisplay.textContent = title || (sheetId ? `ID: ${sheetId.slice(0, 12)}...` : 'Connected');
+      }
+      if (dom.sheetsLastSyncedDisplay) {
+        dom.sheetsLastSyncedDisplay.textContent = lastSynced || 'Never';
+      }
+      const sid = sheetId || this.getSheetId();
+      if (dom.sheetsOpenLink && sid) {
+        dom.sheetsOpenLink.href = `https://docs.google.com/spreadsheets/d/${sid}/edit`;
+        dom.sheetsOpenLink.classList.remove('hidden');
+      }
+    },
+
+    async testConnection() {
+      const mode = this.getMode();
+      const sheetId = this.getSheetId();
+      const scriptUrl = this.getAppsScriptUrl();
+
+      // If in service account mode or local server available:
+      if (mode === 'service_account' || !clientStore.isStaticHost) {
+        if (!sheetId) throw new Error('Please enter your Google Spreadsheet ID.');
+        const res = await fetch('/api/sheets/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ spreadsheetId: sheetId })
+        });
+        const data = await res.json();
+        if (!data.connected) {
+          throw new Error(data.message || 'Connection test failed.');
+        }
+        return data;
+      } else {
+        // Apps Script mode
+        if (!scriptUrl) throw new Error('Please enter your Google Apps Script Web App URL.');
+        const pingUrl = new URL(scriptUrl);
+        pingUrl.searchParams.set('action', 'ping');
+        const res = await fetch(pingUrl.toString());
+        const data = await res.json();
+        if (data.error || data.status !== 'ok') {
+          throw new Error(data.message || 'Apps Script returned error.');
+        }
+        return {
+          connected: true,
+          title: data.title,
+          spreadsheetId: data.spreadsheetId
+        };
+      }
+    },
+
+    async syncNow() {
+      if (this.isSyncing) return;
+      this.isSyncing = true;
+      this.setStatus('syncing', 'Syncing...');
+
+      try {
+        const mode = this.getMode();
+        const sheetId = this.getSheetId();
+        const scriptUrl = this.getAppsScriptUrl();
+
+        if (!clientStore.isStaticHost && mode === 'service_account') {
+          const res = await fetch('/api/sheets/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ spreadsheetId: sheetId })
+          });
+          const data = await res.json();
+          if (!data.success) throw new Error(data.message || 'Sync failed');
+        } else if (scriptUrl) {
+          // Client-side Apps Script sync
+          const pingUrl = new URL(scriptUrl);
+          pingUrl.searchParams.set('action', 'getData');
+          const res = await fetch(pingUrl.toString());
+          const remoteData = await res.json();
+          if (remoteData.success) {
+            const localDb1 = clientStore.getDb1();
+            const localDb2 = clientStore.getDb2();
+            const mergedDb1 = githubSync.mergeReturns(remoteData.returns || [], localDb1);
+            const mergedDb2 = githubSync.mergeScans(remoteData.scans || [], localDb2);
+            clientStore.saveDb1(mergedDb1);
+            clientStore.saveDb2(mergedDb2);
+          }
+        }
+
+        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        localStorage.setItem('gs_last_synced', now);
+        this.setStatus('synced', `Sheet: ${now}`);
+        this.updateModalInfo(null, now, sheetId);
+
+        updateCounts();
+        if (typeof loadMissing === 'function') loadMissing();
+        if (typeof loadScans === 'function') loadScans();
+        if (typeof loadOverview === 'function') loadOverview();
+      } catch (err) {
+        console.warn('Google Sheets sync error:', err);
+        this.setStatus('error', err.message);
+        throw err;
+      } finally {
+        this.isSyncing = false;
+      }
+    },
+
+    async scheduleAutoSyncScan(scanData) {
+      if (!this.isAutoSync()) return;
+      const mode = this.getMode();
+      const scriptUrl = this.getAppsScriptUrl();
+      if (mode === 'apps_script' && scriptUrl) {
+        try {
+          await fetch(scriptUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: JSON.stringify({ action: 'recordScan', ...scanData })
+          });
+        } catch (e) {
+          console.warn('Apps Script scan sync error:', e);
+        }
+      }
+    },
+
+    async scheduleAutoSyncReturns(records) {
+      if (!this.isAutoSync()) return;
+      const mode = this.getMode();
+      const scriptUrl = this.getAppsScriptUrl();
+      if (mode === 'apps_script' && scriptUrl) {
+        try {
+          await fetch(scriptUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: JSON.stringify({ action: 'uploadReturns', records })
+          });
+        } catch (e) {
+          console.warn('Apps Script returns sync error:', e);
+        }
+      }
+    },
+
+    async checkBackendStatus() {
+      if (clientStore.isStaticHost) return;
+      try {
+        const res = await fetch('/api/sheets/config');
+        if (res.ok) {
+          const cfg = await res.json();
+          if (dom.saStatusText && dom.saStatusIcon) {
+            if (cfg.hasServiceAccount) {
+              dom.saStatusIcon.textContent = '✅';
+              dom.saStatusText.textContent = `Service Account Active (${cfg.clientEmail || 'service-account.json'})`;
+              if (dom.saStatusBody) {
+                dom.saStatusBody.innerHTML = `<small class="form-hint" style="color:#10b981;">✓ Ready. Share your sheet with: <code>${cfg.clientEmail || 'service account email'}</code> (Editor permission).</small>`;
+              }
+            } else {
+              dom.saStatusIcon.textContent = '⚠️';
+              dom.saStatusText.textContent = 'service-account.json not found';
+              if (dom.saStatusBody) {
+                dom.saStatusBody.innerHTML = `<small class="form-hint">Place your Google Cloud Service Account JSON file in <code>credentials/service-account.json</code>.</small>`;
+              }
+            }
+          }
+          if (cfg.spreadsheetId && dom.sheetsIdInput && !dom.sheetsIdInput.value) {
+            dom.sheetsIdInput.value = cfg.spreadsheetId;
+            this.setSheetId(cfg.spreadsheetId);
+          }
+        }
+      } catch (e) {}
+    },
+
+    setupUI() {
+      const openModal = () => {
+        if (dom.sheetsModal) {
+          dom.sheetsModal.classList.remove('hidden');
+          if (dom.sheetsIdInput) dom.sheetsIdInput.value = this.getSheetId();
+          if (dom.sheetsScriptUrlInput) dom.sheetsScriptUrlInput.value = this.getAppsScriptUrl();
+          if (dom.sheetsAutoSyncCheckbox) dom.sheetsAutoSyncCheckbox.checked = this.isAutoSync();
+          const last = localStorage.getItem('gs_last_synced') || 'Never';
+          this.updateModalInfo(null, last, this.getSheetId());
+          this.checkBackendStatus();
+        }
+      };
+
+      if (dom.btnSheetsStatus) dom.btnSheetsStatus.addEventListener('click', openModal);
+      if (dom.btnSheetsSync) dom.btnSheetsSync.addEventListener('click', openModal);
+      if (dom.btnCloseSheetsModal) dom.btnCloseSheetsModal.addEventListener('click', () => {
+        if (dom.sheetsModal) dom.sheetsModal.classList.add('hidden');
+      });
+
+      // Mode Tab Switcher
+      if (dom.btnModeServiceAccount && dom.btnModeAppsScript) {
+        dom.btnModeServiceAccount.addEventListener('click', () => {
+          this.setMode('service_account');
+          dom.btnModeServiceAccount.classList.add('active');
+          dom.btnModeAppsScript.classList.remove('active');
+          if (dom.modeServiceAccountFields) dom.modeServiceAccountFields.classList.remove('hidden');
+          if (dom.modeAppsScriptFields) dom.modeAppsScriptFields.classList.add('hidden');
+        });
+
+        dom.btnModeAppsScript.addEventListener('click', () => {
+          this.setMode('apps_script');
+          dom.btnModeAppsScript.classList.add('active');
+          dom.btnModeServiceAccount.classList.remove('active');
+          if (dom.modeAppsScriptFields) dom.modeAppsScriptFields.classList.remove('hidden');
+          if (dom.modeServiceAccountFields) dom.modeServiceAccountFields.classList.add('hidden');
+        });
+
+        if (this.getMode() === 'apps_script') {
+          dom.btnModeAppsScript.click();
+        }
+      }
+
+      // Copy Apps Script code
+      if (dom.btnCopyAppsScript) {
+        dom.btnCopyAppsScript.addEventListener('click', async () => {
+          dom.btnCopyAppsScript.disabled = true;
+          dom.btnCopyAppsScript.innerHTML = '<span>⏳</span> Copying...';
+          try {
+            const res = await fetch('google_sheets_apps_script.js');
+            if (!res.ok) throw new Error(`HTTP ${res.status}: File not found`);
+            const code = await res.text();
+
+            let copied = false;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              try {
+                await navigator.clipboard.writeText(code);
+                copied = true;
+              } catch (e) {}
+            }
+            if (!copied) {
+              const ta = document.createElement('textarea');
+              ta.value = code;
+              ta.style.position = 'fixed';
+              ta.style.left = '-9999px';
+              document.body.appendChild(ta);
+              ta.focus();
+              ta.select();
+              document.execCommand('copy');
+              document.body.removeChild(ta);
+            }
+            alert('📋 Google Apps Script code copied to clipboard successfully!\n\nNext steps in Google Sheet:\n1. Open your sheet and click Extensions > Apps Script\n2. Delete existing code and press Ctrl+V (Paste)\n3. Click Deploy > New deployment > Web app (Who has access: Anyone)\n4. Paste the Web App URL here.');
+          } catch (e) {
+            alert('Could not copy automatically (' + e.message + '). You can find the code in google_sheets_apps_script.js in the project folder.');
+          } finally {
+            dom.btnCopyAppsScript.disabled = false;
+            dom.btnCopyAppsScript.innerHTML = '📋 Copy Script Code';
+          }
+        });
+      }
+
+      // Save & Test Form
+      if (dom.sheetsConfigForm) {
+        dom.sheetsConfigForm.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const rawId = dom.sheetsIdInput ? dom.sheetsIdInput.value : '';
+          const sheetId = this.extractSpreadsheetId(rawId);
+          const scriptUrl = dom.sheetsScriptUrlInput ? dom.sheetsScriptUrlInput.value.trim() : '';
+          const autoSync = dom.sheetsAutoSyncCheckbox ? dom.sheetsAutoSyncCheckbox.checked : true;
+
+          dom.btnSaveSheetsConfig.disabled = true;
+          dom.btnSaveSheetsConfig.innerHTML = `<span>⏳</span> Testing Connection...`;
+
+          try {
+            this.setSheetId(sheetId);
+            this.setAppsScriptUrl(scriptUrl);
+            this.setAutoSync(autoSync);
+
+            if (!clientStore.isStaticHost) {
+              await fetch('/api/sheets/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  spreadsheetId: sheetId,
+                  appsScriptUrl: scriptUrl,
+                  autoSync,
+                  useAppsScript: this.getMode() === 'apps_script'
+                })
+              });
+            }
+
+            const check = await this.testConnection();
+            alert(`✅ Google Sheet Connected Successfully!\n\nSpreadsheet: ${check.title || sheetId}\nStatus: Read & Write active.`);
+            await this.syncNow();
+            if (dom.sheetsModal) dom.sheetsModal.classList.add('hidden');
+          } catch (err) {
+            alert(`❌ Connection test failed:\n${err.message}\n\nPlease verify your spreadsheet ID, permissions, or Web App URL.`);
+            this.setStatus('error', err.message);
+          } finally {
+            dom.btnSaveSheetsConfig.disabled = false;
+            dom.btnSaveSheetsConfig.innerHTML = `<span>💾</span> Save & Test Connection`;
+          }
+        });
+      }
+
+      // Sync Now Button
+      if (dom.btnSheetsSyncNow) {
+        dom.btnSheetsSyncNow.addEventListener('click', async () => {
+          dom.btnSheetsSyncNow.disabled = true;
+          dom.btnSheetsSyncNow.innerHTML = `<span>⏳</span> Syncing...`;
+          try {
+            await this.syncNow();
+            alert('✅ Sync with Google Sheet completed successfully!');
+          } catch (err) {
+            alert(`❌ Sync failed: ${err.message}`);
+          } finally {
+            dom.btnSheetsSyncNow.disabled = false;
+            dom.btnSheetsSyncNow.innerHTML = `<span>🔄</span> Sync Now (Bi-directional)`;
+          }
+        });
+      }
+
+      // Open in Google Sheets
+      if (dom.btnOpenActiveSheet) {
+        dom.btnOpenActiveSheet.addEventListener('click', () => {
+          const sheetId = this.getSheetId();
+          if (!sheetId) return alert('No Google Spreadsheet ID configured yet.');
+          window.open(`https://docs.google.com/spreadsheets/d/${sheetId}/edit`, '_blank');
+        });
+      }
+
+      // Disconnect
+      if (dom.btnSheetsDisconnect) {
+        dom.btnSheetsDisconnect.addEventListener('click', () => {
+          if (!confirm('Disconnect Google Sheets from this browser? (Data in your Google Sheet will remain untouched).')) return;
+          this.setSheetId('');
+          this.setAppsScriptUrl('');
+          if (dom.sheetsIdInput) dom.sheetsIdInput.value = '';
+          if (dom.sheetsScriptUrlInput) dom.sheetsScriptUrlInput.value = '';
+          this.setStatus('default', 'Google Sheets');
+          alert('Google Sheets disconnected.');
+        });
+      }
+    },
+
+    async init() {
+      this.setupUI();
+      const sheetId = this.getSheetId();
+      const scriptUrl = this.getAppsScriptUrl();
+
+      if (sheetId || scriptUrl) {
+        try {
+          const last = localStorage.getItem('gs_last_synced') || 'Never';
+          this.setStatus('synced', `Sheet: ${last}`);
+          this.updateModalInfo(null, last, sheetId);
+          await this.syncNow();
+        } catch (e) {
+          console.warn('Initial Google Sheet sync error (offline or unconfigured):', e);
+        }
+      } else {
+        await this.checkBackendStatus();
+      }
+    }
+  };
+
   // Initialize client store defaults if on static host
   clientStore.initDefaults();
 
@@ -870,6 +1286,35 @@
     btnGhForcePull: document.getElementById('btn-gh-force-pull'),
     btnGhForcePush: document.getElementById('btn-gh-force-push'),
     btnGhDisconnect: document.getElementById('btn-gh-disconnect'),
+
+    // Google Sheets Elements
+    btnSheetsStatus: document.getElementById('btn-sheets-status'),
+    sheetsStatusText: document.getElementById('sheets-status-text'),
+    sheetsStatusBadge: document.getElementById('btn-sheets-status'),
+    btnSheetsSync: document.getElementById('btn-sheets-sync'),
+    sheetsModal: document.getElementById('sheets-modal'),
+    btnCloseSheetsModal: document.getElementById('btn-close-sheets-modal'),
+    sheetsModalStatusDot: document.getElementById('sheets-modal-status-dot'),
+    sheetsModalStatusTitle: document.getElementById('sheets-modal-status-title'),
+    sheetsTitleDisplay: document.getElementById('sheets-title-display'),
+    sheetsLastSyncedDisplay: document.getElementById('sheets-last-synced-display'),
+    sheetsOpenLink: document.getElementById('sheets-open-link'),
+    btnModeServiceAccount: document.getElementById('btn-mode-service-account'),
+    btnModeAppsScript: document.getElementById('btn-mode-apps-script'),
+    modeServiceAccountFields: document.getElementById('mode-service-account-fields'),
+    modeAppsScriptFields: document.getElementById('mode-apps-script-fields'),
+    sheetsIdInput: document.getElementById('sheets-id-input'),
+    saStatusIcon: document.getElementById('sa-status-icon'),
+    saStatusText: document.getElementById('sa-status-text'),
+    saStatusBody: document.getElementById('sa-status-body'),
+    sheetsScriptUrlInput: document.getElementById('sheets-script-url-input'),
+    btnCopyAppsScript: document.getElementById('btn-copy-apps-script'),
+    sheetsAutoSyncCheckbox: document.getElementById('sheets-auto-sync-checkbox'),
+    sheetsConfigForm: document.getElementById('sheets-config-form'),
+    btnSaveSheetsConfig: document.getElementById('btn-save-sheets-config'),
+    btnSheetsSyncNow: document.getElementById('btn-sheets-sync-now'),
+    btnOpenActiveSheet: document.getElementById('btn-open-active-sheet'),
+    btnSheetsDisconnect: document.getElementById('btn-sheets-disconnect'),
 
     // Scanner Elements
     qrReader: document.getElementById('qr-reader'),
@@ -1787,6 +2232,10 @@
       if (typeof githubSync !== 'undefined') {
         githubSync.scheduleAutoSyncScans();
       }
+      // Trigger background auto-sync to Google Sheets
+      if (typeof googleSheetsSync !== 'undefined') {
+        googleSheetsSync.scheduleAutoSyncScan(data);
+      }
     } catch (err) {
       console.error('Scan processing error:', err);
       alert('Error recording scan: ' + err.message);
@@ -2379,6 +2828,15 @@
         }
       }
 
+      // Push to Google Sheets if configured
+      if (typeof googleSheetsSync !== 'undefined') {
+        try {
+          await googleSheetsSync.scheduleAutoSyncReturns(state.uploadedFileRecords);
+        } catch (gsErr) {
+          console.warn('Google Sheets sync warning after upload:', gsErr);
+        }
+      }
+
       dom.uploadPreviewContainer.classList.add('hidden');
       state.uploadedFileRecords = [];
       updateCounts();
@@ -2635,6 +3093,9 @@
     setupMobileConnect();
     if (typeof githubSync !== 'undefined') {
       await githubSync.init();
+    }
+    if (typeof googleSheetsSync !== 'undefined') {
+      await googleSheetsSync.init();
     }
     await initBarcodeDetector();
     updateCounts();
