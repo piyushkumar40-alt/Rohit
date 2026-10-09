@@ -7,8 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-
 const db = require('./db');
+const googleSheets = require('./google_sheets');
 
 const PORT = process.env.PORT || 3000;
 const HTTPS_PORT = process.env.HTTPS_PORT || 3443;
@@ -138,6 +138,17 @@ const requestHandler = async (req, res) => {
           return sendError(res, 400, 'Tracking ID is required');
         }
         const result = db.processScan(body.tracking_id, body.source || 'camera', body.notes || '');
+
+        // Real-time async sync to Google Sheets (if configured)
+        try {
+          const gsConfig = googleSheets.getConfig();
+          if (gsConfig.autoSync && gsConfig.spreadsheetId && !gsConfig.useAppsScript) {
+            googleSheets.recordScan(gsConfig.spreadsheetId, result).catch(e => {
+              console.warn('Google Sheets background scan record error:', e.message);
+            });
+          }
+        } catch (e) {}
+
         return sendJson(res, 200, result);
       }
 
@@ -149,6 +160,17 @@ const requestHandler = async (req, res) => {
           return sendError(res, 400, 'Expected non-empty array of return records');
         }
         const stats = db.batchInsertReturns(records);
+
+        // Real-time async append to Google Sheets (if configured)
+        try {
+          const gsConfig = googleSheets.getConfig();
+          if (gsConfig.autoSync && gsConfig.spreadsheetId && !gsConfig.useAppsScript) {
+            googleSheets.appendReturns(gsConfig.spreadsheetId, records).catch(e => {
+              console.warn('Google Sheets background batch append error:', e.message);
+            });
+          }
+        } catch (e) {}
+
         return sendJson(res, 200, {
           success: true,
           message: `Processed ${stats.totalRows} rows: ${stats.inserted} newly added, ${stats.ignored} existing/empty records ignored silently.`,
@@ -329,6 +351,47 @@ const requestHandler = async (req, res) => {
         const body = await parseJsonBody(req);
         db.clearDatabase(body.target || 'scans');
         return sendJson(res, 200, { success: true, message: `Cleared ${body.target || 'scans'}` });
+      }
+
+      // 12. Google Sheets Integration Routes
+      if (pathname === '/api/sheets/config' && req.method === 'GET') {
+        const config = googleSheets.getConfig();
+        const creds = googleSheets.getServiceAccountCredentials();
+        return sendJson(res, 200, {
+          ...config,
+          hasServiceAccount: Boolean(creds),
+          clientEmail: creds ? creds.client_email : null
+        });
+      }
+
+      if (pathname === '/api/sheets/config' && req.method === 'POST') {
+        const body = await parseJsonBody(req);
+        const updated = googleSheets.saveConfig(body);
+        const creds = googleSheets.getServiceAccountCredentials();
+        return sendJson(res, 200, {
+          success: true,
+          config: {
+            ...updated,
+            hasServiceAccount: Boolean(creds),
+            clientEmail: creds ? creds.client_email : null
+          }
+        });
+      }
+
+      if (pathname === '/api/sheets/test' && req.method === 'POST') {
+        const body = await parseJsonBody(req);
+        const result = await googleSheets.testConnection(body.spreadsheetId);
+        return sendJson(res, 200, result);
+      }
+
+      if (pathname === '/api/sheets/sync' && req.method === 'POST') {
+        const body = await parseJsonBody(req);
+        try {
+          const result = await googleSheets.syncWithLocalDb(db, body.spreadsheetId);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message);
+        }
       }
 
       return sendError(res, 404, 'API endpoint not found');
