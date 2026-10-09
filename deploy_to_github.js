@@ -49,6 +49,7 @@ const FILES_TO_DEPLOY = [
   'data/scanned_returns.json',
   'src/google_sheets.js',
   'google_sheets_apps_script.js',
+  'public/google_sheets_apps_script.js',
   'GOOGLE_SHEETS_SETUP.md',
   'credentials/README.md',
   'test/test_db.js',

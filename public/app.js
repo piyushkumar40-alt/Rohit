@@ -1105,13 +1105,37 @@
       // Copy Apps Script code
       if (dom.btnCopyAppsScript) {
         dom.btnCopyAppsScript.addEventListener('click', async () => {
+          dom.btnCopyAppsScript.disabled = true;
+          dom.btnCopyAppsScript.innerHTML = '<span>⏳</span> Copying...';
           try {
             const res = await fetch('google_sheets_apps_script.js');
+            if (!res.ok) throw new Error(`HTTP ${res.status}: File not found`);
             const code = await res.text();
-            await navigator.clipboard.writeText(code);
-            alert('📋 Google Apps Script code copied to clipboard!\n\nOpen Extensions > Apps Script in your Google Sheet, paste it, and deploy as a Web App.');
+
+            let copied = false;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              try {
+                await navigator.clipboard.writeText(code);
+                copied = true;
+              } catch (e) {}
+            }
+            if (!copied) {
+              const ta = document.createElement('textarea');
+              ta.value = code;
+              ta.style.position = 'fixed';
+              ta.style.left = '-9999px';
+              document.body.appendChild(ta);
+              ta.focus();
+              ta.select();
+              document.execCommand('copy');
+              document.body.removeChild(ta);
+            }
+            alert('📋 Google Apps Script code copied to clipboard successfully!\n\nNext steps in Google Sheet:\n1. Open your sheet and click Extensions > Apps Script\n2. Delete existing code and press Ctrl+V (Paste)\n3. Click Deploy > New deployment > Web app (Who has access: Anyone)\n4. Paste the Web App URL here.');
           } catch (e) {
-            alert('Could not copy automatically. You can copy the code directly from google_sheets_apps_script.js in the project.');
+            alert('Could not copy automatically (' + e.message + '). You can find the code in google_sheets_apps_script.js in the project folder.');
+          } finally {
+            dom.btnCopyAppsScript.disabled = false;
+            dom.btnCopyAppsScript.innerHTML = '📋 Copy Script Code';
           }
         });
       }
