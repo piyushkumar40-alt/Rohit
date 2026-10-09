@@ -5,3 +5,13 @@ data/*.db-shm
 .DS_Store
 *.log
 *.pfx
+credentials/
+*service-account*.json
+*credentials*.json
+service-account.json
+google-key.json
+.env
+.env.*
+data/google_sheets_config.json
+.github/
+

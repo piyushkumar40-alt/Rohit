@@ -31,6 +31,9 @@
         <span class="badge live-badge" id="connection-status">
           <span class="status-dot"></span> Live
         </span>
+        <button id="btn-sheets-status" class="badge badge-sheets" title="Configure Google Sheets Backend">
+          <span class="status-dot"></span> <span id="sheets-status-text">Google Sheets</span>
+        </button>
         <button id="btn-github-status" class="badge badge-github" title="Configure GitHub Cloud Storage">
           <span class="status-dot"></span> <span id="github-status-text">GitHub Storage</span>
         </button>
@@ -39,6 +42,9 @@
       <div class="header-actions">
         <button id="btn-sound-toggle" class="btn-icon" title="Toggle Sound Feedback">
           <span id="sound-icon">🔊</span>
+        </button>
+        <button id="btn-sheets-sync" class="btn-secondary-sm" title="Configure Google Sheets Backend & Sync">
+          <span>📊</span> <span id="sheets-sync-btn-label">Google Sheet</span>
         </button>
         <button id="btn-github-sync" class="btn-secondary-sm" title="Configure GitHub Cloud Storage & Sync">
           <span>☁️</span> <span id="github-sync-btn-label">GitHub Sync</span>
@@ -549,6 +555,115 @@
                 </button>
                 <button type="button" id="btn-gh-disconnect" class="btn-danger-sm" title="Remove token from this browser">
                   🗑️ Disconnect Token
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Google Sheets Cloud Database Modal -->
+    <div id="sheets-modal" class="modal-backdrop hidden">
+      <div class="modal-card modal-lg">
+        <div class="modal-header">
+          <h3 class="modal-title">📊 Google Sheets Backend & Sync</h3>
+          <button id="btn-close-sheets-modal" class="btn-icon">✕</button>
+        </div>
+        <div class="modal-body modal-body-form">
+          <p class="modal-desc">
+            Use your <strong>Google Sheet</strong> as the live cloud database for Flipkart returns and barcode/QR scans.
+            All scans, manifest uploads, and reconciliations are stored in <code>Flipkart_Returns</code> and <code>Scanned_Returns</code> tabs in real time.
+          </p>
+
+          <div class="gh-sync-status-box sheets-status-box" id="sheets-sync-status-box">
+            <div class="gh-status-indicator">
+              <span class="status-dot" id="sheets-modal-status-dot"></span>
+              <strong id="sheets-modal-status-title">Checking connection...</strong>
+            </div>
+            <div class="gh-status-details" id="sheets-status-details">
+              <span>Sheet: <strong id="sheets-title-display">Not Configured</strong></span>
+              <span>Last Sync: <span id="sheets-last-synced-display">Never</span></span>
+              <a id="sheets-open-link" href="#" target="_blank" rel="noopener" class="sheets-link hidden">Open in Google Sheets ↗</a>
+            </div>
+          </div>
+
+          <!-- Mode Selector Tabs -->
+          <div class="sheets-tab-selector">
+            <button type="button" class="sheets-mode-btn active" id="btn-mode-service-account" data-mode="service_account">
+              🔑 Service Account (API v4)
+            </button>
+            <button type="button" class="sheets-mode-btn" id="btn-mode-apps-script" data-mode="apps_script">
+              ⚡ Apps Script Web App
+            </button>
+          </div>
+
+          <form id="sheets-config-form" class="gh-config-form">
+            <!-- Mode 1: Service Account Fields -->
+            <div id="mode-service-account-fields" class="sheets-mode-fields">
+              <div class="form-group">
+                <label for="sheets-id-input">Google Spreadsheet ID or URL:</label>
+                <input type="text" id="sheets-id-input" placeholder="e.g. 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms or paste full Sheet URL" autocomplete="off">
+                <small class="form-hint">Found in your Google Sheet URL: <code>https://docs.google.com/spreadsheets/d/<b>&lt;SPREADSHEET_ID&gt;</b>/edit</code></small>
+              </div>
+
+              <div class="service-account-status-card" id="sa-status-card">
+                <div class="sa-status-header">
+                  <span id="sa-status-icon">🔍</span>
+                  <span id="sa-status-text">Checking credentials/service-account.json...</span>
+                </div>
+                <div class="sa-status-body" id="sa-status-body">
+                  <small class="form-hint">Place your Google Cloud Service Account JSON file in <code>credentials/service-account.json</code> and share the sheet with that email as Editor.</small>
+                </div>
+              </div>
+            </div>
+
+            <!-- Mode 2: Apps Script Fields -->
+            <div id="mode-apps-script-fields" class="sheets-mode-fields hidden">
+              <div class="form-group">
+                <label for="sheets-script-url-input">Google Apps Script Web App URL:</label>
+                <input type="url" id="sheets-script-url-input" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
+                <small class="form-hint">Deploy <code>google_sheets_apps_script.js</code> as a Web App (Who has access: Anyone) to get this URL.</small>
+              </div>
+
+              <div class="apps-script-helper-card">
+                <div class="helper-card-header">
+                  <span>⚡ 2-Minute Zero-GCP Setup</span>
+                  <button type="button" id="btn-copy-apps-script" class="btn-secondary-sm">📋 Copy Script Code</button>
+                </div>
+                <ol class="helper-card-steps">
+                  <li>In your Google Sheet, click <strong>Extensions &gt; Apps Script</strong>.</li>
+                  <li>Paste the code from <code>google_sheets_apps_script.js</code> and save.</li>
+                  <li>Click <strong>Deploy &gt; New deployment &gt; Web app</strong> (Access: Anyone).</li>
+                  <li>Paste the resulting Web App URL above and click Save.</li>
+                </ol>
+              </div>
+            </div>
+
+            <div class="form-group-checkbox">
+              <label>
+                <input type="checkbox" id="sheets-auto-sync-checkbox" checked>
+                <span><strong>Auto-Sync Enabled</strong> (Automatically sync each barcode scan & uploaded manifest directly into Google Sheet)</span>
+              </label>
+            </div>
+
+            <div class="modal-btn-row">
+              <button type="submit" id="btn-save-sheets-config" class="btn-primary">
+                <span>💾</span> Save & Test Connection
+              </button>
+              <button type="button" id="btn-sheets-sync-now" class="btn-secondary">
+                <span>🔄</span> Sync Now (Bi-directional)
+              </button>
+            </div>
+
+            <div class="gh-advanced-actions">
+              <span class="label">Google Sheets Actions:</span>
+              <div class="btn-group-sm">
+                <button type="button" id="btn-open-active-sheet" class="btn-secondary-sm" title="Open the connected spreadsheet in a new tab">
+                  📊 Open Google Sheet ↗
+                </button>
+                <button type="button" id="btn-sheets-disconnect" class="btn-danger-sm" title="Disconnect Google Sheets integration">
+                  🗑️ Disconnect
                 </button>
               </div>
             </div>

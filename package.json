@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "seed": "node src/seed.js",
-    "test": "node test/test_db.js && node test/test_api.js"
+    "test": "node test/test_db.js && node test/test_api.js && node test/test_google_sheets.js"
   },
   "keywords": [
     "flipkart",

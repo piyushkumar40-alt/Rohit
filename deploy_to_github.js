@@ -47,6 +47,10 @@ const FILES_TO_DEPLOY = [
   'data/sample_flipkart_returns.csv',
   'data/flipkart_returns.json',
   'data/scanned_returns.json',
+  'src/google_sheets.js',
+  'google_sheets_apps_script.js',
+  'GOOGLE_SHEETS_SETUP.md',
+  'credentials/README.md',
   'test/test_db.js',
   'test/test_api.js',
   'deploy_to_github.js'
